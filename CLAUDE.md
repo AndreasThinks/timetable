@@ -74,6 +74,20 @@ smoke suite (`tests/e2e/`) — it always starts its own web server on port 3100
 (override with `PLAYWRIGHT_PORT`), so it coexists with a running dev stack.
 Follow existing patterns:
 `apps/web/src/lib/transport.test.ts`, `packages/shared/src/hearts.test.ts`.
+Web COMPONENT tests (jsdom + `@testing-library/react`, since queue-keys
+2026-09-07) opt in per file with a `// @vitest-environment jsdom` docblock
+— node stays the default so pure lib tests don't pay for a DOM. Pattern:
+`apps/web/src/components/QueueControls.test.tsx` (mock `next/navigation`,
+`@/lib/clientGraphql` and `@/components/Toast` through `vi.hoisted`).
+`vitest.config.ts` sets `oxc: { jsx: { runtime: "automatic" } }` because
+Vite 8 transforms with Oxc and tsconfig's `jsx: preserve` (which Next
+needs) would otherwise leave JSX untransformed. **jsdom is pinned to ^29
+and declared at the ROOT** (2026-09-10): jsdom 30 needs Node ≥ 22.22 (its
+undici 8 calls `worker_threads.markAsUncloneable`), and CI + the prod
+image run Node 20; and vitest resolves the environment package from the
+root `node_modules`, where npm would not reliably hoist a workspace-only
+devDependency (CI failed with "Cannot find package 'jsdom'" until the
+root declaration). Verified under a Node 20 binary locally.
 Lint covers everything: `apps/web` has its own Next config; the root
 `eslint.config.mjs` lints `apps/api`, `packages/*`, `tests/`, `scripts/`.
 
@@ -290,6 +304,26 @@ Stable names for feature pieces, so instructions can reference them precisely.
   it (one step forward, landing on the live topic at step 0), where at
   step 0 it stays the Next that marks seen and advances. The done screen
   carries the same step as "Look back at the last topic".
+- **queue-keys** — the Topic Queue's arrow mapping (2026-09-07): **←**
+  back, **→** next, **↑** ❤️, **↓** comment. `queueKeyAction` /
+  `isTypingTarget` in `apps/web/src/lib/queueKeys.ts` decide (pure, so the
+  mapping is unit-tested); `QueueControls` binds ONE window listener per
+  mount and dispatches through a ref, because `router.refresh()`
+  reconciles that component in place — a listener closed over `topicId`
+  would keep acting on the topic two cards back. Each arrow does exactly
+  what its button does, queue-back included, so nothing new can be done
+  from the keyboard. ↓ runs `requestOpen()` and focuses
+  `[data-topic-composer]` (bounded rAF retry: `followCommentsOpen` may
+  still be switching the strip back to Comments); in the box **Enter
+  posts**, Shift+Enter starts a line, Escape blurs and the arrows come
+  back — `CommentComposer`'s `submitOnEnter`, which the queue is the only
+  surface to pass; a successful Enter-post blurs the box too, so ↓ type
+  Enter → is one uninterrupted gesture (adopted from Matt's #346,
+  2026-09-10). Arrows are ignored with any modifier and while the
+  target is an input/textarea/contenteditable; ↑/↓ `preventDefault` so the
+  page doesn't scroll under the card, which is the one thing this costs.
+  Covered by `QueueControls.test.tsx` — the web workspace's first jsdom
+  component test.
 - **page-topic-toc** — `PageTopicToc.tsx` (Ed, 2026-08-17): the little
   table of contents under the My Topics and ❤️/💙 Topics page titles —
   the People-page profile-card topic-list look (`person-topics` styles),

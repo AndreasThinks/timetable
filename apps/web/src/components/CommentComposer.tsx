@@ -33,9 +33,30 @@ function composerCopy(
     placeholder:
       overrides.placeholder ??
       (scopeLabel ? `Add a ${scopeLabel} note…` : "Add a comment…"),
+    /** The @mention-capable public box says so; an override still wins. */
+    mentionPlaceholder:
+      overrides.placeholder ?? "Add a comment… (@ to mention)",
     success:
       overrides.successMessage ??
       (scopeLabel ? `${scopeLabel} note added` : "Comment added"),
+  };
+}
+
+/** `submitOnEnter`'s key handling: Enter posts, Shift+Enter (or any
+ * modifier) starts a line, Escape blurs so the Topic Queue's arrows work
+ * again. On the mention path the picker sees the key first and keeps
+ * Enter for itself while it's open. */
+function enterToPost(post: () => void) {
+  return (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Escape") {
+      e.currentTarget.blur();
+      return;
+    }
+    if (e.key !== "Enter" || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) {
+      return;
+    }
+    e.preventDefault();
+    post();
   };
 }
 
@@ -50,6 +71,7 @@ export function CommentComposer({
   mentionSlug,
   placeholder,
   successMessage,
+  submitOnEnter,
 }: {
   topicId: string;
   visibility?: "public" | "host_only" | "admin_only";
@@ -62,6 +84,11 @@ export function CommentComposer({
   placeholder?: string;
   /** Override the scope-derived success toast. */
   successMessage?: string;
+  /** queue-keys (2026-09-07): make the box a keyboard stop — Enter posts,
+   * Shift+Enter starts a line, Escape blurs so the Topic Queue's arrows
+   * work again. Off everywhere else: on a feed card the composer is one
+   * of many, and Enter-to-post costs you a half-written paragraph. */
+  submitOnEnter?: boolean;
 }) {
   const { run, busy } = useGqlAction();
   // Posting unfolds the card's comment-teaser so the new comment is
@@ -95,8 +122,7 @@ export function CommentComposer({
         : null;
   const copy = composerCopy(scopeLabel, { placeholder, successMessage });
 
-  function submit(e: React.FormEvent) {
-    e.preventDefault();
+  function post() {
     const text = body.trim();
     if (!text) return;
     void run(
@@ -108,10 +134,23 @@ export function CommentComposer({
         onSuccess: () => {
           clearBody();
           requestOpen();
+          // queue-keys: once Enter has posted, the box gives the arrows
+          // back by itself — the round continues with → rather than an
+          // Escape first (adopted from #346, 2026-09-10).
+          if (submitOnEnter && document.activeElement instanceof HTMLElement) {
+            document.activeElement.blur();
+          }
         },
       },
     );
   }
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault();
+    post();
+  }
+
+  const keyHandler = submitOnEnter ? enterToPost(post) : undefined;
 
   return (
     // No own margin — the surrounding stack/thread-stack gap spaces it
@@ -125,9 +164,10 @@ export function CommentComposer({
               value={body}
               onChange={setBody}
               candidates={candidates}
-              placeholder="Add a comment… (@ to mention)"
+              placeholder={copy.mentionPlaceholder}
               ariaLabel="Comment"
               dataTopicComposer={topicId}
+              onUnhandledKeyDown={keyHandler}
             />
           </div>
         ) : (
@@ -137,6 +177,7 @@ export function CommentComposer({
             placeholder={copy.placeholder}
             aria-label={scopeLabel ? `${scopeLabel} comment` : "Comment"}
             data-topic-composer={scopeLabel ? undefined : topicId}
+            onKeyDown={keyHandler}
           />
         )}
         <button
