@@ -76,6 +76,10 @@ export const timetableMemberships = pgTable(
     name: text(),
     image: text(),
     bio: text(),
+    /** Contact Details (2026-09-30): Markdown shown above the profile to
+     * forum MEMBERS only — never the public, never the export. Gated by
+     * shared `canSeeContactDetails`. */
+    contactDetails: text(),
     /** URL slug, unique per timetable (person pages /f/[slug]/[userSlug]
      * and the cosmetic host segment in topic permalinks). */
     slug: text(),
