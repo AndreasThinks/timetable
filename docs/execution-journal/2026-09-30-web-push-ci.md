@@ -93,3 +93,25 @@ so the merge was recreated with the same two parents in the writable checkout
 `/tmp/timetable-reconciled-ready`, on `reconcile/source-link-web-push`.
 All reviewed tracked files were copied there; the supplied index was preserved.
 The standalone bundle is `/tmp/timetable-reconciled-ready.bundle`.
+
+## Host verification superseding the sandbox blockers
+
+The earlier restrictions above apply to the Codex sandbox, not the host.
+A clean `npm ci` on the host succeeded. Independently reran:
+
+- Full workspace typecheck: pass, including web.
+- Full lint: pass with the existing CollapsibleTopicBody hook warning.
+- Format check: pass.
+- Canonical `npm test`: shared 108, API 237 (including HTTP integration),
+  web 95 tests, all passed.
+- Full production build: pass; existing CSS `::highlight(topic-search)`
+  parser warning remains.
+- GitHub authentication and upstream lookup: pass. Pushed the reconciled branch.
+
+Rendered the actual async GuidePage component with mocked auth/forum data,
+using the production-built CSS, into standalone browser fixtures. Chromium
+screenshots cover Fellow, Faculty, and 390px mobile layouts; mobile has no
+horizontal overflow. This verifies the component preview, not a live authenticated
+full-stack session or its navigation. Preview scripts are outside the committed
+application tree. Live push-provider delivery, installed-device validation,
+actual database migration execution, and end-to-end browser tests remain unverified.
