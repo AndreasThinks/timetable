@@ -142,6 +142,11 @@ Codex/agent workflows are separate from the app runtime.
   per-row topic folds, admin-only host activity table
 - per-forum API page (`/f/[slug]/api`): the JSON export download, personal
   API token management, GraphQL endpoint docs, and the Atom/ICS feed URLs
+- How it works page (`/f/[slug]/guide`, last sidebar link, every viewer):
+  a short role-aware guide built by `buildForumGuide` in
+  `apps/web/src/lib/forumGuide.ts` from the viewer's roles, the forum's
+  role labels, and its feature settings — each step links to the page it
+  describes (forum-guide, 2026-09-30)
 - `/admin` sysadmin dashboard (SYSADMIN_EMAILS-gated forum overview/delete)
 - `/timetables` resolver → last-engaged timetable's feed, or the create screen
 - social preview (Open Graph) cards for the app, forums, topics, and people

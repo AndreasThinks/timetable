@@ -341,6 +341,17 @@ light/dark/auto toggle (the forum's theme defines both palettes). New users
 with no forum land on the create screen; returning users land on the feed of
 the forum they last engaged with.
 
+Every forum has a **How it works** page, the last sidebar link, for
+anyone who can read the forum. It is written for whoever is reading it:
+a one-paragraph summary of what the forum is for, then a few numbered
+steps for each role the reader holds (a visitor sees how membership
+works instead), then where notifications and profiles live. It uses the
+forum's own role names, mentions only features the forum has switched on
+(calendar, host-only thread, hosts publishing directly, the calendar
+policy), and each step links to the page it describes. It is a map, not
+a manual: no tour, no dismissible popups, nothing to keep in sync beyond
+`apps/web/src/lib/forumGuide.ts`.
+
 Profile images, topic covers, icons, and forum covers can be pasted as image
 URLs or uploaded through the app to object storage.
 
