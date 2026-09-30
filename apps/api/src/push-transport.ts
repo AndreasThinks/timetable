@@ -11,8 +11,7 @@ export function validPushEndpoint(value: unknown): value is string {
     const allowed =
       host === "fcm.googleapis.com" ||
       host === "updates.push.services.mozilla.com" ||
-      host.endsWith(".push.apple.com") ||
-      host === "web.push.apple.com";
+      host.endsWith(".push.apple.com");
     return (
       allowed &&
       url.protocol === "https:" &&

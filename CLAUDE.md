@@ -453,6 +453,62 @@ Stable names for feature pieces, so instructions can reference them precisely.
   pollute it (all reading marks are mutations, refused while previewing);
   keep any NEW reading mark a mutation for that reason.
 
+- **contact-details** — `timetableMemberships.contactDetails` (migration
+  0043) + shared `canSeeContactDetails` / `isProfilePublic` +
+  `ContactDetails.tsx` (Ed, 2026-09-30, from users on public forums
+  wanting somewhere to put contact details the internet can't read): a
+  second per-forum Markdown profile box that ONLY forum members see —
+  never the public, never deactivated members, never the JSON export.
+  Stripped in `personForViewer` (members.ts), the one gate every
+  profile read passes; the export builds its people field by field and
+  deliberately omits it (Ed: nobody collects everyone's contact details
+  in one download). Readers see it ABOVE the bio (person page, host header on
+  /topics, People cards); both editors (own profile page, admin Edit on
+  People cards) are one "Profile" over Name → Contact Details → About
+  (Ed, 2026-09-30, second pass — the first pass's separate "Public
+  Profile" heading is gone: a public-sounding title over a members-only
+  box contradicted itself). Named "Contact Details",
+  not "Private Profile", so people don't write a second whole profile.
+  Contact Details and About each carry a who-can-read-this line
+  (`lib/profileLabels.ts`; About names the internet only where
+  `isProfilePublic` — public/no_comments; hosts and admins on
+  hosts_only); readers see a
+  🔒 "Members only" note on Contact Details only where the profile around
+  them is public.
+
+- **host-lounge** — the {host} Lounge (Ed, 2026-09-30;
+  `docs/host-lounge-plan.md`): ONE hosts-and-admins-only threaded room per
+  forum at `/f/[slug]/lounge` ("Faculty Lounge" on Newspeak), OFF until
+  an admin switches it on in Forum Settings. Its own tables
+  (`lounge_comments`, migration 0044), so nothing that reads topic
+  comments can see it — never fold it into `comments`. Gate: shared
+  `canUseLounge` + `isLoungeEnabled`; anyone else gets `lounge: null`
+  and the page 404s, so the room never announces itself. Conversations
+  are an opening post (Markdown, the topic editor, draft recovery) plus
+  plain-text replies threaded by the ordinary comment components through
+  **comment-thread-adapter**. **Bump order** (latest reply first, pins
+  above — admins pin), but **nothing moves while you read**:
+  `stableOrder` in `lib/loungeThread.ts` keeps the order the page first
+  showed, fresh conversations go on top, "Show older" appends below.
+  Edits, reacts and moderation never bump. The round "+" sits beside the
+  heading on desktop and floats bottom-right under 640px, where the
+  composer becomes a full-screen sheet. Emoji reacts (the first in Topic)
+  via Frimousse with same-origin data in `public/emojibase` (the CSP
+  blocks its CDN); ❤️/💙 refused — they are votes here. Digest: ONE card,
+  always LAST, never in the subject line (`loadLoungeDigestCard`: new
+  conversations, replies in ones you started or chains you're in,
+  @mentions — the rest stays in the room); reacts never digest. Nav: a
+  dot, not a count. Replies/mentions reach the notifications pane. Counts
+  as Last activity; excluded from the JSON export.
+
+- **comment-thread-adapter** — `lib/commentThreadAdapter.tsx`
+  (2026-09-30): the context CommentList, CommentActions, CommentEditForm
+  and ChainTailComposer read their mutations (and optional body / editor
+  / footer render hooks) from. Topic comments are the default; the
+  Lounge provides its own. One thread implementation for both surfaces —
+  add a new comment surface the same way, never by copying CommentList
+  (SlotDiscussion's copy is the cautionary tale).
+
 - **feed-position-store** — `lib/feedPosition.ts` (Ed's "going back feels
   fragile", 2026-08-28): remembers, per feed view, how many pages the
   infinite feed had appended and the scroll offset, so Back replays them

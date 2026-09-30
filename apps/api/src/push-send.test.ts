@@ -28,11 +28,11 @@ describe("push provider outcomes", () => {
     async (statusCode, expected) => {
       mocks.request.mockImplementation((_url, _options, callback) => {
         const request = Object.assign(new EventEmitter(), {
-          end() {
+          end(this: EventEmitter) {
             callback({ statusCode, resume: vi.fn() });
             this.emit("close");
           },
-          destroy() {
+          destroy(this: EventEmitter) {
             this.emit("error", new Error("network failure"));
             this.emit("close");
           },

@@ -306,8 +306,22 @@
     {
       "idx": 43,
       "version": "7",
-      "when": 1790726400000,
-      "tag": "0043_web_push",
+      "when": 1790773659578,
+      "tag": "0043_contact_details",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1790784770495,
+      "tag": "0044_lounge",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1790791679006,
+      "tag": "0045_web_push",
       "breakpoints": true
     }
   ]

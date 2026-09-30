@@ -12,12 +12,24 @@ describe("push event selection", () => {
   it("includes a new public-thread reply", () => {
     expect(pushTopicCandidates([comment], since, now, true)).toEqual(["topic"]);
   });
-  it("excludes host-only and drafting activity", () => {
+  it("excludes host-only, drafting, and Lounge activity", () => {
     expect(
       pushTopicCandidates(
         [
           { ...comment, visibility: "host_only" },
           { ...comment, visibility: "admin_only" },
+          {
+            ...comment,
+            visibility: "lounge",
+            kind: "lounge_reply",
+            topicId: "",
+          },
+          {
+            ...comment,
+            visibility: "lounge",
+            kind: "lounge_mention",
+            topicId: "",
+          },
         ],
         since,
         now,

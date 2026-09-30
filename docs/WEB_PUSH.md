@@ -16,7 +16,7 @@ No deployment specifications, production infrastructure, or scheduled workflows
 were changed. Push is unavailable until an operator performs these steps:
 
 1. Install normal repository dependencies and apply the additive migration with
-   `npm run db:migrate` to the intended environment. Migration 0043 adds only
+   `npm run db:migrate` to the intended environment. Migration 0045 adds only
    `push_subscriptions`, its membership foreign key and unique index.
 2. Generate a P-256 key pair privately with `node scripts/generate-vapid.mjs`.
    Its output contains a PRIVATE KEY: store it in your secret manager, never in
