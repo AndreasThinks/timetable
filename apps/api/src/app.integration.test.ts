@@ -244,6 +244,7 @@ function membershipFixture(
     name: null,
     image: null,
     bio: null,
+    contactDetails: null,
     slug: null,
     lastSeenFeedAt: null,
     lastSeenNotificationsAt: null,
@@ -3479,6 +3480,78 @@ describe("createApiApp", () => {
           });
         });
       }
+    });
+  });
+});
+
+describe("Contact Details (members only)", () => {
+  const PERSON_QUERY = `query($s: String!, $u: String){
+    person(idOrSlug: $s, userId: $u) { name contactDetails contactDetailsHtml }
+  }`;
+
+  function mockPublicForum(viewerRoles: Role[]) {
+    vi.mocked(core.getReadableTimetable).mockResolvedValue({
+      timetable: timetableFixture({ privacy: "public" }),
+      roles: viewerRoles,
+    });
+    vi.mocked(core.getPerson).mockResolvedValue({
+      userId: "member-1",
+      name: "Ada",
+      image: null,
+      slug: "ada",
+      bio: "Public bio",
+      contactDetails: "ada@example.com",
+      roles: ["host"],
+      deactivatedAt: null,
+    });
+  }
+
+  async function readPerson(baseUrl: string) {
+    const res = await fetch(`${baseUrl}/graphql`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: PERSON_QUERY,
+        variables: { s: "public-calendar", u: "member-1" },
+      }),
+    });
+    return (await res.json()) as {
+      data?: { person: Record<string, unknown> | null } | null;
+      errors?: unknown;
+    };
+  }
+
+  it("hides them from anonymous visitors to a public forum", async () => {
+    mockPublicForum([]);
+    await withTestServer(async (baseUrl) => {
+      const body = await readPerson(baseUrl);
+      expect(body.errors).toBeUndefined();
+      expect(body.data?.person).toEqual({
+        name: "Ada",
+        contactDetails: null,
+        contactDetailsHtml: null,
+      });
+    });
+  });
+
+  it("hides them from signed-in non-members", async () => {
+    mockSession("stranger-1", []);
+    mockPublicForum([]);
+    await withTestServer(async (baseUrl) => {
+      const body = await readPerson(baseUrl);
+      expect(body.data?.person?.contactDetails).toBeNull();
+    });
+  });
+
+  it("shows them to forum members", async () => {
+    mockSession("elector-1", ["elector"]);
+    mockPublicForum(["elector"]);
+    await withTestServer(async (baseUrl) => {
+      const body = await readPerson(baseUrl);
+      expect(body.data?.person?.contactDetails).toBe("ada@example.com");
+      expect(body.data?.person?.contactDetailsHtml).toContain(
+        "ada@example.com",
+      );
     });
   });
 });

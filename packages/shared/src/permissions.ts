@@ -77,6 +77,26 @@ export function canSeePersonProfile(
   return true;
 }
 
+/** Contact Details (2026-09-30): forum members only, whatever the privacy
+ * level — the whole point is the part of a profile the public never sees.
+ * A deactivated member resolves to no roles, so they lose sight too. */
+export function canSeeContactDetails(viewer: Viewer): boolean {
+  if (viewer.sysadmin) return true;
+  return isMember(viewer.roles);
+}
+
+/** Whether this person's profile is open to the internet — what earns it
+ * the "Public Profile" label (plain "Profile" otherwise, 2026-09-30). */
+export function isProfilePublic(
+  privacy: Privacy,
+  personRoles: readonly Role[],
+): boolean {
+  return (
+    canReadTimetable(privacy, ANONYMOUS) &&
+    canSeePersonProfile(privacy, ANONYMOUS, personRoles)
+  );
+}
+
 /** Only logged-in electors can heart topics. */
 export function canHeart(viewer: Viewer): boolean {
   return isAuthenticated(viewer) && isElector(viewer.roles);
