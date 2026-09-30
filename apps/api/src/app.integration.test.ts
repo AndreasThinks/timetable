@@ -124,8 +124,7 @@ vi.mock("./email", async (importOriginal) => {
  * `graphql` — masking every resolver error as "Unexpected error." */
 const real = vi.hoisted(() => ({
   buildContext: undefined as
-    | undefined
-    | typeof import("./context").buildContext,
+    undefined | typeof import("./context").buildContext,
 }));
 
 vi.mock("./context", async (importOriginal) => {
@@ -3480,5 +3479,73 @@ describe("createApiApp", () => {
         });
       }
     });
+  });
+});
+
+describe("push subscription session boundary", () => {
+  it("requires a signed-in session", async () => {
+    await withTestServer(async (baseUrl) => {
+      const response = await fetch(
+        `${baseUrl}/api/forums/forum-a/push-subscriptions`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "disable",
+            endpoint: "https://fcm.googleapis.com/send/device",
+          }),
+        },
+      );
+      expect(response.status).toBe(401);
+    });
+  });
+  it("rejects arbitrary network endpoints before persistence", async () => {
+    mockSession("member", ["elector"]);
+    await withTestServer(async (baseUrl) => {
+      const response = await fetch(
+        `${baseUrl}/api/forums/forum-a/push-subscriptions`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "disable",
+            endpoint: "https://127.0.0.1/private",
+          }),
+        },
+      );
+      expect(response.status).toBe(400);
+    });
+  });
+  it("uses the authenticated identity, ignoring an asserted owner in the body", async () => {
+    mockSession("member", ["elector"]);
+    const manage = vi
+      .spyOn(core, "managePush")
+      .mockResolvedValue({ status: 403, enabled: false });
+    try {
+      await withTestServer(async (baseUrl) => {
+        const endpoint = "https://fcm.googleapis.com/send/device";
+        const response = await fetch(
+          `${baseUrl}/api/forums/other-forum/push-subscriptions`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "disable",
+              endpoint,
+              userId: "other-user",
+            }),
+          },
+        );
+        expect(response.status).toBe(403);
+        expect(manage).toHaveBeenCalledWith(
+          "member",
+          "other-forum",
+          endpoint,
+          "disable",
+        );
+      });
+    } finally {
+      manage.mockRestore();
+    }
   });
 });

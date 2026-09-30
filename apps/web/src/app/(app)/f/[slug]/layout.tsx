@@ -416,6 +416,14 @@ export default async function TimetableLayout({
             >
               <Flag size={14} aria-hidden /> Report a bug
             </a>
+            <a
+              className="sidebar-bug-link faint"
+              href="https://github.com/AndreasThinks/timetable"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Source code
+            </a>
           </div>
         </Sidebar>
 

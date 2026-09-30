@@ -365,6 +365,12 @@ topics, replies to their comments, @mentions of them, and session changes on
 topics they ❤️'d, each linking through; an unread badge in the sidebar
 clears when the pane is opened.
 
+Optional device push is configured separately on each forum’s Notifications page.
+Alerts contain generic text only and open a signed-in forum notification chooser.
+The initial slice covers public-thread comments and session events on published
+topics, requires operator VAPID/scheduler setup, and supports installed iOS/iPadOS
+Home Screen apps from version 16.4. See [Web Push](WEB_PUSH.md).
+
 For email, digests are configured **per forum** on the Notifications page:
 on/off, daily or weekly cadence, and sixteen per-kind switches (comments on
 your topics, threads you're part of, @mentions, ❤️s and 💙s, followed-topic
@@ -417,8 +423,8 @@ and the git log — this document describes the present.
 - Custom-domain hostname routing is wired in the web proxy, but per-forum
   DNS/Clerk setup is not productised — the settings field is labelled
   "coming soon".
-- Email digest is the only email channel; Slack, push, and others are not
-  started. No immediate email on topic reassignment yet (#57).
+- Email digest is the only email channel; Slack and other channels are not
+  started. Push has a minimal opt-in slice, with no durable delivery queue. No immediate email on topic reassignment yet (#57).
 - The digest and invite email templates are provisional — the product's
   emails have not been designed yet.
 - The in-app notifications pane has no per-item read state or mark-all-read.

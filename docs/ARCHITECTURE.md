@@ -485,3 +485,21 @@ kept (empty) so Next.js serves any future static files from the site root.
   database-side relief and search cost grows linearly with forum size;
   fine at current sizes, revisit for very large timetables (audit
   2026-08-17).
+
+## Web Push (2026-09-30)
+
+The web manifest and root `public/sw.js` provide install metadata and data-less
+push/click handling, with no offline cache. Per-forum `PushSettings` uses GraphQL
+`pushPublicKey` / `myPushEnabled` reads and the session-only REST
+`POST /api/forums/:slug/push-subscriptions` for enable/disable. Endpoints remain
+in request bodies, not URLs. `push_subscriptions` references membership IDs and
+cascades on deletion; there is no implicit opt-in from email preferences.
+
+`POST /api/jobs/push` uses the existing cron-secret boundary. Core rechecks active
+membership, readable forum and published topics before asking the API's VAPID
+transport to send an empty push. It coalesces existing public-thread notification
+activity, preserving the cursor on transient failures. The worker's fixed text
+links to `/notifications`; that server-rendered chooser fetches current forum
+memberships over GraphQL. Setup, provider allowlisting and best-effort delivery
+limits are in [WEB_PUSH.md](WEB_PUSH.md). Scheduler/infrastructure are not installed
+by this change.
