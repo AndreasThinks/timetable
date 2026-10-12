@@ -1,12 +1,18 @@
 import { createClerkClient, verifyToken } from "@clerk/backend";
 import { eq } from "drizzle-orm";
 
-import { claimInvitesForUser } from "@timetable/core";
+import {
+  claimInvitesForUser,
+  syncDiscordAccount,
+  type DiscordIdentity,
+} from "@timetable/core";
 import { db, users } from "@timetable/db";
 import { normalizeEmail } from "@timetable/shared";
 
 import { env } from "../env";
 import { parseCookies } from "../http/cookies";
+
+import { discordIdentityFromClerkUser } from "./discord";
 
 export type SessionUser = {
   id: string;
@@ -60,6 +66,7 @@ type ClerkProfile = {
   name: string | null;
   image: string | null;
   externalId: string | null;
+  discord: DiscordIdentity | null;
 };
 
 /** Mirror of the Clerk profile fields we copy into the local user row.
@@ -78,9 +85,16 @@ async function fetchClerkProfile(clerkUserId: string): Promise<ClerkProfile> {
         cu.username ||
         null,
       image: cu.imageUrl ?? null,
+      discord: discordIdentityFromClerkUser(cu),
     };
   } catch {
-    return { email: null, name: null, image: null, externalId: null };
+    return {
+      email: null,
+      name: null,
+      image: null,
+      externalId: null,
+      discord: null,
+    };
   }
 }
 
@@ -117,7 +131,25 @@ async function createUserFromClerkProfile(
     await claimInvitesForUser(clerkUserId, profile.email);
   }
 
+  // Signing up with Discord links it from the first request.
+  if (profile.discord) {
+    await syncDiscordAccount(clerkUserId, profile.discord).catch((err) => {
+      console.error("[discord] first sign-in sync failed:", err);
+    });
+  }
+
   return loadLocalUser(clerkUserId);
+}
+
+/**
+ * Re-read the member's Discord link from Clerk and mirror it locally
+ * (discord-account). Accounts linked or unlinked after first sign-in reach
+ * the database through here. Throws when Clerk can't be reached, so a
+ * transient failure never reads as "unlinked" and deletes the row.
+ */
+export async function syncDiscordFromClerk(clerkUserId: string) {
+  const cu = await clerkClient.users.getUser(clerkUserId);
+  return syncDiscordAccount(clerkUserId, discordIdentityFromClerkUser(cu));
 }
 
 /**

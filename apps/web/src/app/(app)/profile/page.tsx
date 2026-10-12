@@ -2,15 +2,21 @@ import { auth } from "@clerk/nextjs/server";
 import { redirect } from "next/navigation";
 
 import { ProfilePanel } from "@/components/ProfilePanel";
+import {
+  DISCORD_ACCOUNT_FIELDS,
+  type DiscordAccount,
+} from "@/lib/gqlFragments";
 import { gqlFetch } from "@/lib/graphql";
 
 type Data = {
   me: { email: string | null } | null;
+  myDiscordAccount: DiscordAccount | null;
   myLastVisitedTimetableSlug: string | null;
 };
 
 const QUERY = `query {
   me { email }
+  myDiscordAccount { ${DISCORD_ACCOUNT_FIELDS} }
   myLastVisitedTimetableSlug: myLastVisitedForumSlug
 }`;
 
@@ -32,7 +38,12 @@ export default async function ProfilePage() {
 
   return (
     <main className="container">
-      <ProfilePanel email={data.me.email} slug={null} profile={null} />
+      <ProfilePanel
+        email={data.me.email}
+        slug={null}
+        profile={null}
+        discord={data.myDiscordAccount}
+      />
     </main>
   );
 }

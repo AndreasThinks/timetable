@@ -1,4 +1,5 @@
 export * from "./apiTokens";
+export * from "./discordAccounts";
 export * from "./timetables";
 export * from "./invites";
 export * from "./members";

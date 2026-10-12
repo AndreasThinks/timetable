@@ -7,7 +7,7 @@ export * from "./lounge";
 export * from "./push";
 export * from "./rate-limits";
 
-import { apiTokens, users } from "./auth";
+import { apiTokens, discordAccounts, users } from "./auth";
 import {
   availability,
   availabilityPatterns,
@@ -23,6 +23,9 @@ import { activityEvents, comments, hearts, hostHearts, topics } from "./topics";
 /** Convenience: inferred row types for the whole schema. */
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
+
+export type DiscordAccount = typeof discordAccounts.$inferSelect;
+export type NewDiscordAccount = typeof discordAccounts.$inferInsert;
 
 export type ApiToken = typeof apiTokens.$inferSelect;
 export type NewApiToken = typeof apiTokens.$inferInsert;
