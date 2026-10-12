@@ -2,10 +2,15 @@ import { auth } from "@clerk/nextjs/server";
 import { redirect } from "next/navigation";
 
 import { ProfilePanel } from "@/components/ProfilePanel";
+import {
+  DISCORD_ACCOUNT_FIELDS,
+  type DiscordAccount,
+} from "@/lib/gqlFragments";
 import { gqlFetch } from "@/lib/graphql";
 
 type Data = {
   me: { email: string | null } | null;
+  myDiscordAccount: DiscordAccount | null;
   person: {
     name: string | null;
     bio: string | null;
@@ -15,6 +20,7 @@ type Data = {
 
 const QUERY = `query Profile($s: String!) {
   me { email }
+  myDiscordAccount { ${DISCORD_ACCOUNT_FIELDS} }
   person(idOrSlug: $s) { name bio image }
 }`;
 
@@ -35,6 +41,11 @@ export default async function TimetableProfilePage({
   if (!data.me) redirect("/sign-in");
 
   return (
-    <ProfilePanel email={data.me.email} slug={slug} profile={data.person} />
+    <ProfilePanel
+      email={data.me.email}
+      slug={slug}
+      profile={data.person}
+      discord={data.myDiscordAccount}
+    />
   );
 }

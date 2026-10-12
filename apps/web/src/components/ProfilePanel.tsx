@@ -1,4 +1,6 @@
+import { DiscordAccountPanel } from "@/components/DiscordAccountPanel";
 import { ProfileForm } from "@/components/ProfileForm";
+import type { DiscordAccount } from "@/lib/gqlFragments";
 
 /** The profile editor. Profiles are per-forum (2026-07): inside a forum
  * (/f/[slug]/profile) the name/photo/bio form edits that forum's
@@ -9,6 +11,7 @@ export function ProfilePanel({
   email,
   slug,
   profile,
+  discord,
 }: {
   email: string | null;
   /** Forum context; null on the standalone account page. */
@@ -19,6 +22,8 @@ export function ProfilePanel({
     bio: string | null;
     image: string | null;
   } | null;
+  /** The viewer's linked Discord account, account-level like email. */
+  discord: DiscordAccount | null;
 }) {
   return (
     <div className="stack">
@@ -41,6 +46,7 @@ export function ProfilePanel({
           </p>
         </div>
       )}
+      <DiscordAccountPanel initial={discord} />
     </div>
   );
 }

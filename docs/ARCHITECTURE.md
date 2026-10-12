@@ -329,6 +329,22 @@ There are no Auth.js tables and no Clerk webhook is required for normal
 operation. A future `user.deleted` webhook could be added if hard deletion of
 local rows is required.
 
+### Linked Discord accounts (2026-10-12)
+
+Discord is a Clerk social connection: "Continue with Discord" appears on the
+Clerk sign-in/sign-up components once it is enabled in the Clerk dashboard, and
+members link or unlink it from the Discord card on their profile page
+(`DiscordAccountPanel`, which drives Clerk's connect-an-account redirect).
+Clerk keeps the OAuth tokens. The `discord_account` table (one row per user,
+`discord_user_id` unique) mirrors the Discord identity so a future Discord bot
+can map a Discord user to a member (`getUserIdByDiscordUserId`) without calling
+Clerk. It is written by `syncDiscordAccount` (core) from two places in the API:
+first sign-in (`createUserFromClerkProfile`), and the `syncDiscordAccount`
+mutation the profile card runs on mount and after a link change
+(`syncDiscordFromClerk`, which re-reads Clerk's `externalAccounts`). Still no
+webhook: a link changed elsewhere reaches the table on the member's next
+profile visit.
+
 ### Personal API tokens (2026-08-13)
 
 A second credential, for scripts and external clients that can't hold a

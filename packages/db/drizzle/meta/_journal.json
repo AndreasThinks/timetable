@@ -302,6 +302,13 @@
       "when": 1789034046592,
       "tag": "0042_flimsy_rocket_raccoon",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1791817263667,
+      "tag": "0043_discord_account",
+      "breakpoints": true
     }
   ]
 }

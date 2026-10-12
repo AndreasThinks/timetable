@@ -15,6 +15,7 @@ import { builder } from "./builder";
 
 import "./types";
 import "./api-tokens";
+import "./discord";
 import "./topics";
 import "./comments";
 import "./members";

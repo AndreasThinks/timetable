@@ -66,3 +66,14 @@ export const TOPIC_FEED_FIELDS = `
   ${commentTree()}
   ${commentTree("adminComments")}
 `;
+
+/** The viewer's linked Discord account (discord-account). */
+export const DISCORD_ACCOUNT_FIELDS = `discordUserId username globalName avatarUrl linkedAt`;
+
+export type DiscordAccount = {
+  discordUserId: string;
+  username: string | null;
+  globalName: string | null;
+  avatarUrl: string | null;
+  linkedAt: string;
+};

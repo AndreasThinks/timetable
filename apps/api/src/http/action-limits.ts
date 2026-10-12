@@ -36,6 +36,9 @@ export const ACTION_LIMITS = {
   /** Signed upload URLs. Objects are public-read and never garbage
    * collected, so cap how fast one account can mint them. */
   upload: { windowMs: 60 * 60_000, max: 60 },
+  /** Discord link refreshes — each one is a Clerk API call. The profile
+   * page syncs on visit and after a link change; a loop is what this stops. */
+  discordSync: { windowMs: 60_000, max: 10 },
 } as const;
 
 export type LimitedAction = keyof typeof ACTION_LIMITS;
@@ -48,6 +51,7 @@ const BLOCKED_MESSAGES: Record<LimitedAction, string> = {
   invite: "Too many invites sent recently",
   forum: "You're creating forums too quickly",
   upload: "You're uploading too quickly",
+  discordSync: "You're refreshing your Discord link too quickly",
 };
 
 export type ActionDecision = { allowed: boolean; retryAfterSeconds: number };

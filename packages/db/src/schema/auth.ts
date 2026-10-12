@@ -76,3 +76,28 @@ export const apiTokens = pgTable(
   },
   (t) => [index("api_token_user_idx").on(t.userId)],
 );
+
+/**
+ * The Discord account a member linked through Clerk (discord-account,
+ * 2026-10-12). Clerk owns the OAuth connection and its tokens — this row
+ * only mirrors the Discord identity, so a future Discord bot can map a
+ * Discord user id back to a member without calling Clerk. One per user;
+ * a Discord account can belong to one user only. Synced from Clerk's
+ * `externalAccounts` on first sign-in and whenever the member's profile
+ * page asks (`syncDiscordAccount`); unlinking in Clerk deletes the row on
+ * the next sync.
+ */
+export const discordAccounts = pgTable("discord_account", {
+  userId: text()
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  /** Discord's snowflake user id — the stable key a bot looks people up by. */
+  discordUserId: text().notNull().unique(),
+  /** Discord username (the unique handle, no discriminator since 2023). */
+  username: text(),
+  /** Display name, when the member has set one on Discord. */
+  globalName: text(),
+  avatarUrl: text(),
+  linkedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+});

@@ -469,6 +469,18 @@ Stable names for feature pieces, so instructions can reference them precisely.
   still runs first, so a deep restore briefly shows the top and then
   jumps; fixing that would mean owning `scrollRestoration` app-wide.
 
+- **discord-account** — `discord_account` table (migration 0043) +
+  `packages/core/src/discordAccounts.ts` + `syncDiscordFromClerk` /
+  `discordIdentityFromClerkUser` (api `auth/`) + `DiscordAccountPanel` on
+  both profile pages (2026-10-12): log in with Discord is a Clerk social
+  connection (enable it in the Clerk dashboard, per instance); our table
+  only MIRRORS the Discord identity (snowflake id, username, display name,
+  avatar) for a future Discord bot — Clerk keeps the OAuth tokens. Synced
+  on first sign-in and by the `syncDiscordAccount` mutation (profile card,
+  on mount and when Clerk's link changes); an unlink deletes the row on
+  the next sync. No webhook yet. The mutation is session-only (absent from
+  MUTATION_SCOPES) and rate-limited (`discordSync`).
+
 ## Gotchas (learned the hard way)
 
 - **In-page jump links must be `next/link`, never a bare `<a href="#…">`**
