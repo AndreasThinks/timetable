@@ -35,6 +35,8 @@ import {
   recordDigestSend,
   removeMembership,
   setMemberRoles,
+  subscribePush,
+  unsubscribePush,
   updateUserEmail,
 } from "@timetable/core";
 import {
@@ -46,8 +48,10 @@ import {
   createTimetableSchema,
   inviteSchema,
   isCalendarEnabled,
+  isLoungeEnabled,
   normalizeEmail,
   officeHoursLabel,
+  PUSH_DEVICE_CAP,
   updateMemberEmailSchema,
   updateMemberRolesSchema,
   type Role,
@@ -55,6 +59,7 @@ import {
 } from "@timetable/shared";
 
 import { buildAtomFeed } from "../atom";
+import { extractApiToken } from "../auth/api-token";
 import {
   createSignInTicket,
   getOrCreateClerkUser,
@@ -81,6 +86,7 @@ import {
 } from "../http/request-log";
 import { buildIcs } from "../ics";
 import { renderMarkdown } from "../markdown";
+import { validPushEndpoint, validPushKeys } from "../push-transport";
 import {
   createSignedUpload,
   isUploadPurpose,
@@ -654,7 +660,7 @@ type UploadAuth =
   | { ok: false; status: number; error: string };
 
 /** Forum-branding uploads target a timetable: resolve it and check the
- * viewer's role there (hosts for topic covers, admins for the timetable
+ * viewer's role there (hosts for topic covers and post images, admins for the timetable
  * cover AND icon — the icon was un-gated until the 2026-08-17 audit).
  * Only profile images need no timetable. */
 async function authorizeUpload(
@@ -675,8 +681,10 @@ async function authorizeUpload(
   }
 
   const viewer = { userId, roles: readable.roles };
+  // Topic covers and images inside posts (topic bodies, the {host}
+  // Lounge): whoever may write those — hosts and admins.
   if (
-    purpose === "topic-cover" &&
+    (purpose === "topic-cover" || purpose === "post-image") &&
     !(canProposeTopics(viewer) || canModerate(viewer))
   ) {
     return { ok: false, status: 403, error: "Hosts only" };
@@ -759,6 +767,184 @@ restRouter.post(
   }),
 );
 
+// ---------------------------------------------------------------------------
+// Web Push devices (docs/web-push-plan.md, #368, step 2b). Per USER, not per
+// forum: a subscription is a device, and turning alerts on covers every
+// forum on it. Which kinds alert is per forum (`pushKindsJson` on
+// updateMyForumDigestSettings).
+//
+// The endpoint and keys are a capability — with our VAPID key they put text
+// on that screen — so they travel only in the request BODY (never the URL,
+// which the request log records), are never logged, and are never echoed
+// back. Core re-throws database errors sanitised for the same reason.
+// ---------------------------------------------------------------------------
+
+/**
+ * The checks both device routes open with, in order: 503 while push is off
+ * (no VAPID keys — the web app hides every control then, so this only meets
+ * a stale tab or a script); then refuse an admin's view-as preview (it must
+ * not subscribe the previewed person, nor quietly the admin's own device)
+ * and personal API tokens (scripts have no device); then 401 when signed
+ * out. REST never accepts a token or honours x-view-as anyway
+ * (`contextFromRequest`); both are refused by name so that stays true if
+ * either rule ever loosens. Returns the user, or null after an error.
+ */
+async function requirePushUser(req: Request, res: Response) {
+  if (!env.push) {
+    res.status(503).json({ error: "Alerts are not available here" });
+    return null;
+  }
+  if (req.headers["x-view-as"]) {
+    res.status(403).json({ error: "Alerts can't be changed in a preview" });
+    return null;
+  }
+  if (extractApiToken(req.headers.authorization)) {
+    res
+      .status(403)
+      .json({ error: "Alerts can only be changed from a signed-in browser" });
+    return null;
+  }
+  const ctx = await contextFromRequest(req);
+  if (ctx.impersonation) {
+    res.status(403).json({ error: "Alerts can't be changed in a preview" });
+    return null;
+  }
+  if (ctx.apiToken) {
+    res
+      .status(403)
+      .json({ error: "Alerts can only be changed from a signed-in browser" });
+    return null;
+  }
+  return requireUserCtx(ctx, res);
+}
+
+/** A subscribe body that passed the shape checks, or the 400 to send. */
+type PushSubscribeBody =
+  | {
+      ok: true;
+      endpoint: string;
+      p256dh: string;
+      auth: string;
+      label: string | null;
+    }
+  | { ok: false; error: string };
+
+/** The endpoint must be a known push service (`validPushEndpoint`, the
+ * SSRF allowlist); the keys must decode to a 65-byte P-256 point and a
+ * 16-byte secret (`validPushKeys`). */
+function readPushSubscribeBody(raw: unknown): PushSubscribeBody {
+  const body = (raw ?? {}) as {
+    endpoint?: unknown;
+    keys?: { p256dh?: unknown; auth?: unknown } | null;
+    label?: unknown;
+  };
+  if (!validPushEndpoint(body.endpoint)) {
+    return { ok: false, error: "Invalid push subscription" };
+  }
+  const keys = typeof body.keys === "object" && body.keys ? body.keys : {};
+  if (!validPushKeys(keys.p256dh, keys.auth)) {
+    return { ok: false, error: "Invalid push subscription keys" };
+  }
+  return {
+    ok: true,
+    endpoint: body.endpoint,
+    p256dh: keys.p256dh as string,
+    auth: keys.auth as string,
+    label: typeof body.label === "string" ? body.label : null,
+  };
+}
+
+/** Core's refusals as HTTP: `invalid` → 400; `taken` → 409 (another
+ * account's subscription on this browser — never moved silently; the
+ * client unsubscribes the browser and subscribes afresh, which yields a
+ * new endpoint, see core push.ts); `cap` → 409. */
+const PUSH_SUBSCRIBE_REFUSALS = {
+  invalid: { status: 400, body: { error: "Invalid push subscription" } },
+  taken: {
+    status: 409,
+    body: {
+      error: "Alerts on this browser belong to another account",
+      reason: "taken",
+    },
+  },
+  cap: {
+    status: 409,
+    body: {
+      error: `Alerts are already on for ${PUSH_DEVICE_CAP} devices — turn them off on one first`,
+      reason: "cap",
+    },
+  },
+} as const;
+
+/**
+ * POST /api/push-subscriptions
+ * Turn alerts on for THIS device, or refresh its keys (browsers rotate
+ * them). Body: `PushSubscription.toJSON()` — `{ endpoint, keys: { p256dh,
+ * auth } }` — plus an optional short `label` ("Chrome on Android").
+ * After the shared checks: the body's shape (`readPushSubscribeBody`),
+ * then the `pushSubscribe` action limit, then core. Responds with the
+ * device as its owner sees it (id, label, dates) — never the endpoint or
+ * keys. 201 for a new device, 200 for a refresh.
+ */
+restRouter.post(
+  "/push-subscriptions",
+  h(async (req, res) => {
+    const user = await requirePushUser(req, res);
+    if (!user) return;
+
+    const input = readPushSubscribeBody(req.body);
+    if (!input.ok) {
+      res.status(400).json({ error: input.error });
+      return;
+    }
+    if (!(await enforceActionLimit(res, user.id, "pushSubscribe"))) return;
+
+    const { ok: _ok, ...subscription } = input;
+    const result = await subscribePush(user.id, subscription);
+    if (!result.ok) {
+      const refusal = PUSH_SUBSCRIBE_REFUSALS[result.reason];
+      res.status(refusal.status).json(refusal.body);
+      return;
+    }
+    const { device } = result;
+    res.status(result.created ? 201 : 200).json({
+      subscribed: true,
+      created: result.created,
+      device: {
+        id: device.id,
+        label: device.label,
+        createdAt: device.createdAt.toISOString(),
+        lastSentAt: device.lastSentAt?.toISOString() ?? null,
+      },
+    });
+  }),
+);
+
+/**
+ * DELETE /api/push-subscriptions
+ * Turn alerts off for THIS device. Body: `{ endpoint }`. Removes only the
+ * caller's own row for that endpoint; other devices are untouched. No
+ * allowlist check, so a device is always removable even if a push service
+ * ever leaves the allowlist, and no action limit (deleting your own row
+ * costs nothing; the per-IP limiter still applies). Idempotent:
+ * `{ unsubscribed: false }` when there was nothing to remove.
+ */
+restRouter.delete(
+  "/push-subscriptions",
+  h(async (req, res) => {
+    const user = await requirePushUser(req, res);
+    if (!user) return;
+
+    const endpoint = (req.body as { endpoint?: unknown } | undefined)?.endpoint;
+    if (typeof endpoint !== "string" || !endpoint) {
+      res.status(400).json({ error: "Invalid push subscription" });
+      return;
+    }
+    const removed = await unsubscribePush(user.id, endpoint);
+    res.json({ unsubscribed: removed });
+  }),
+);
+
 /** The showcase digest for the test send: the real renderer over sample
  * data, filtered by the forum's configured kind defaults so the admin
  * previews exactly what a default member's digest carries. */
@@ -779,6 +965,8 @@ function buildTestDigest(
     forumSlug: timetable.slug,
     accent: timetable.settings?.theme?.primary ?? null,
     kindDefaults: timetable.settings?.digestKindDefaults ?? {},
+    hostLabel: timetable.settings?.roleLabels?.host ?? "Host",
+    loungeEnabled: isLoungeEnabled(timetable.settings ?? {}),
   });
 }
 

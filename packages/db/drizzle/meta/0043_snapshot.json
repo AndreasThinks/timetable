@@ -1,5 +1,5 @@
 {
-  "id": "12a48119-01e7-40f0-acf9-623a4036bb6e",
+  "id": "e03ece2f-28ed-4246-88e8-159c7a451bed",
   "prevId": "8a2470cf-6bac-4905-8ea3-332b876a2ae1",
   "version": "7",
   "dialect": "postgresql",
@@ -111,85 +111,6 @@
           "nullsNotDistinct": false,
           "columns": [
             "token_hash"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.discord_account": {
-      "name": "discord_account",
-      "schema": "",
-      "columns": {
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "discord_user_id": {
-          "name": "discord_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "username": {
-          "name": "username",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "global_name": {
-          "name": "global_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "avatar_url": {
-          "name": "avatar_url",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "linked_at": {
-          "name": "linked_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "discord_account_user_id_user_id_fk": {
-          "name": "discord_account_user_id_user_id_fk",
-          "tableFrom": "discord_account",
-          "tableTo": "user",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "discord_account_discordUserId_unique": {
-          "name": "discord_account_discordUserId_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "discord_user_id"
           ]
         }
       },
@@ -577,6 +498,12 @@
         },
         "bio": {
           "name": "bio",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "contact_details": {
+          "name": "contact_details",
           "type": "text",
           "primaryKey": false,
           "notNull": false

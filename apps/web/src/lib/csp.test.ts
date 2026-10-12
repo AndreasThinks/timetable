@@ -40,6 +40,19 @@ describe("buildCsp", () => {
     expect(csp).toContain("style-src 'self' 'unsafe-inline'");
   });
 
+  it("allows the same-origin install manifest", () => {
+    // installable-app (#367): Add to Home Screen reads /manifest.webmanifest.
+    expect(buildCsp("n")).toContain("manifest-src 'self'");
+  });
+
+  it("allows registering the same-origin push service worker", () => {
+    // Web Push step 4 (#368): lib/push.ts registers /sw.js.
+    const worker = buildCsp("n")
+      .split("; ")
+      .find((d) => d.startsWith("worker-src "));
+    expect(worker?.split(" ")).toContain("'self'");
+  });
+
   it("includes the API origin in connect-src", () => {
     fakeEnv.apiUrl = "https://topic.forum";
     expect(buildCsp("n")).toContain("connect-src 'self' https://topic.forum");

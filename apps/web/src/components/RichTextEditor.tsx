@@ -3,6 +3,12 @@
 import Image from "@tiptap/extension-image";
 import Link from "@tiptap/extension-link";
 import Placeholder from "@tiptap/extension-placeholder";
+import {
+  DOMParser as PMDOMParser,
+  Slice,
+  type ResolvedPos,
+} from "@tiptap/pm/model";
+import type { EditorView } from "@tiptap/pm/view";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import {
@@ -16,8 +22,64 @@ import {
   ListOrdered,
   Quote,
 } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Markdown } from "tiptap-markdown";
+
+import { useToast } from "@/components/Toast";
+import { isSubmitShortcut, submitFormFrom } from "@/lib/submitShortcut";
+import {
+  ACCEPTED_IMAGE_TYPES,
+  imageFiles,
+  shrinkImage,
+  uploadImageFile,
+} from "@/lib/uploadImage";
+
+/**
+ * Plain-text paste (Ed, QA 2026-09-30). tiptap-markdown parses pasted text
+ * as ONE inline run with whitespace preserved, so every newline became a
+ * hard break — a triple-click copy (which carries the line ending) pasted
+ * as a line plus stray breaks, and pasted paragraphs collapsed into
+ * <br>s. Instead: trim the surrounding blank lines, parse as ordinary
+ * Markdown (blank lines → paragraphs), and open the slice fully so a
+ * single line joins the paragraph you paste into, as rich pastes do.
+ * Shift-paste (`plain`) keeps ProseMirror's own plain handling.
+ */
+function parsePastedText(
+  text: string,
+  context: ResolvedPos,
+  plain: boolean,
+  view: EditorView,
+): Slice {
+  const editor = (view.dom as HTMLElement & { editor?: Editor }).editor;
+  const trimmed = text.replace(/^\s*\n|\n\s*$/g, "");
+  // ProseMirror's own reading of plain text, for shift-paste and the
+  // cases this parser can't handle.
+  const fallback = () => {
+    // One paragraph per line, as ProseMirror itself reads plain text.
+    const dom = document.createElement("div");
+    for (const line of trimmed.split(/\r?\n/)) {
+      dom.append(
+        Object.assign(document.createElement("p"), { textContent: line }),
+      );
+    }
+    return PMDOMParser.fromSchema(view.state.schema).parseSlice(dom, {
+      context,
+    });
+  };
+  if (plain || !editor || !trimmed) return Slice.maxOpen(fallback().content);
+  const storage = editor.storage as {
+    markdown?: { parser: { parse(md: string): string } };
+  };
+  const html = storage.markdown?.parser.parse(trimmed);
+  if (html === undefined) return Slice.maxOpen(fallback().content);
+  // An inert document, never innerHTML on a live element: pasted text is
+  // untrusted, and a live <img onerror> would run even detached.
+  const dom = new window.DOMParser().parseFromString(html, "text/html").body;
+  const slice = PMDOMParser.fromSchema(view.state.schema).parseSlice(dom, {
+    context,
+  });
+  return Slice.maxOpen(slice.content);
+}
 
 /** WYSIWYG editor for topic descriptions (QA #59). Off-the-shelf TipTap;
  * markdown stays the source of truth — the Markdown extension round-trips
@@ -27,12 +89,34 @@ export function RichTextEditor({
   onChange,
   placeholder = "Write…",
   minHeight = 420,
+  uploadForum,
+  submitOnShortcut = false,
 }: {
   value: string;
   onChange: (markdown: string) => void;
   placeholder?: string;
   minHeight?: number;
+  /** The forum whose storage takes images (hosts and admins may upload):
+   * the image button uploads, and pasting or dropping an image does too.
+   * Without it the button asks for an image's web address. */
+  uploadForum?: string;
+  /** submit-shortcut (#361): Ctrl/⌘+Enter presses the surrounding form's
+   * one send button (TipTap's own Mod-Enter hard break gives way; Shift+
+   * Enter still breaks a line). For forms with a single obvious action —
+   * the topic and Lounge-post composers. */
+  submitOnShortcut?: boolean;
 }) {
+  // Key handlers are fixed when the editor is created: read the flag live.
+  const submitShortcut = useRef(submitOnShortcut);
+  useEffect(() => {
+    submitShortcut.current = submitOnShortcut;
+  }, [submitOnShortcut]);
+  // Paste/drop handlers are fixed when the editor is created, so they call
+  // through a ref that ImageControl keeps pointed at the live uploader.
+  const upload = useRef<((file: File) => void) | null>(null);
+  const setUploader = useCallback((fn: ((file: File) => void) | null) => {
+    upload.current = fn;
+  }, []);
   // Tracks what the editor last emitted so external resets (e.g. Discard,
   // post-save clear) can be told apart from our own onUpdate echoes.
   const lastEmitted = useRef(value);
@@ -51,6 +135,30 @@ export function RichTextEditor({
     ],
     content: value,
     immediatelyRender: false,
+    editorProps: {
+      clipboardTextParser: parsePastedText,
+      // View props run before extension keymaps, so this outranks HardBreak.
+      handleKeyDown: (view, event) => {
+        if (!submitShortcut.current || !isSubmitShortcut(event)) return false;
+        event.preventDefault();
+        submitFormFrom(view.dom);
+        return true;
+      },
+      handlePaste: (_view, event) => {
+        const files = imageFiles(event.clipboardData);
+        if (files.length === 0 || !upload.current) return false;
+        event.preventDefault();
+        for (const f of files) upload.current(f);
+        return true;
+      },
+      handleDrop: (_view, event, _slice, moved) => {
+        const files = imageFiles(event.dataTransfer);
+        if (moved || files.length === 0 || !upload.current) return false;
+        event.preventDefault();
+        for (const f of files) upload.current(f);
+        return true;
+      },
+    },
     onUpdate: ({ editor: e }) => {
       const md = getMarkdown(e);
       lastEmitted.current = md;
@@ -137,14 +245,10 @@ export function RichTextEditor({
             else chain.unsetLink().run();
           }}
         />
-        <ToolButton
-          active={false}
-          label={<ImageIcon size={16} aria-hidden />}
-          title="Image from URL"
-          onClick={() => {
-            const url = window.prompt("Image URL");
-            if (url) editor.chain().focus().setImage({ src: url }).run();
-          }}
+        <ImageControl
+          editor={editor}
+          uploadForum={uploadForum}
+          onUploader={setUploader}
         />
       </div>
       <EditorContent
@@ -153,6 +257,85 @@ export function RichTextEditor({
         style={{ minHeight }}
       />
     </div>
+  );
+}
+
+/** The toolbar's image button. With a forum to upload into it opens a file
+ * picker (and keeps `upload` — what paste and drop call — pointed at the
+ * uploader); without one it asks for an image's web address. Photos are
+ * shrunk in the browser before they go up. */
+function ImageControl({
+  editor,
+  uploadForum,
+  onUploader,
+}: {
+  editor: Editor;
+  uploadForum?: string;
+  onUploader: (fn: ((file: File) => void) | null) => void;
+}) {
+  const { toastError } = useToast();
+  const [uploading, setUploading] = useState(0);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const uploader = useCallback(
+    (file: File) => {
+      if (!uploadForum) return;
+      setUploading((n) => n + 1);
+      shrinkImage(file)
+        .then((small) => uploadImageFile(small, "post-image", uploadForum))
+        .then((src) => editor.chain().focus().setImage({ src }).run())
+        .catch((err: unknown) =>
+          toastError(err instanceof Error ? err.message : "Upload failed"),
+        )
+        .finally(() => setUploading((n) => n - 1));
+    },
+    [editor, uploadForum, toastError],
+  );
+
+  useEffect(() => {
+    onUploader(uploadForum ? uploader : null);
+    return () => onUploader(null);
+  }, [uploadForum, uploader, onUploader]);
+
+  if (!uploadForum) {
+    return (
+      <ToolButton
+        active={false}
+        label={<ImageIcon size={16} aria-hidden />}
+        title="Image from URL"
+        onClick={() => {
+          const url = window.prompt("Image URL");
+          if (url) editor.chain().focus().setImage({ src: url }).run();
+        }}
+      />
+    );
+  }
+  return (
+    <>
+      <ToolButton
+        active={false}
+        label={<ImageIcon size={16} aria-hidden />}
+        title={uploading > 0 ? "Uploading image…" : "Add an image"}
+        onClick={() => fileInput.current?.click()}
+      />
+      <input
+        ref={fileInput}
+        type="file"
+        accept={ACCEPTED_IMAGE_TYPES}
+        multiple
+        hidden
+        onChange={(e) => {
+          for (const f of Array.from(e.target.files ?? [])) {
+            uploader(f);
+          }
+          e.target.value = "";
+        }}
+      />
+      {uploading > 0 ? (
+        <span className="rte-status" role="status">
+          Uploading image…
+        </span>
+      ) : null}
+    </>
   );
 }
 

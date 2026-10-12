@@ -16,13 +16,18 @@ import {
   canReadTimetable,
   canSeeComments,
   canSeeHostHeartTallies,
+  canSeeContactDetails,
   canSeePersonProfile,
   canTouchSlotSession,
+  canUseLounge,
   canUseQueue,
   isCalendarEnabled,
+  isProfilePublic,
+  LOUNGE_ROLES,
   ownsTopicAsHost,
   type Viewer,
 } from "./permissions";
+import { ROLES, type Role } from "./roles";
 
 const MEMBER: Viewer = { userId: "u1", roles: ["elector"] };
 const SIGNED_IN_GUEST: Viewer = { userId: "u2", roles: [] };
@@ -57,6 +62,37 @@ describe("canSeePersonProfile", () => {
   });
 });
 
+describe("canSeeContactDetails", () => {
+  it("members see contact details; the public never does", () => {
+    expect(canSeeContactDetails(MEMBER)).toBe(true);
+    expect(canSeeContactDetails({ userId: "h", roles: ["host"] })).toBe(true);
+    expect(canSeeContactDetails(ANONYMOUS)).toBe(false);
+    expect(canSeeContactDetails(SIGNED_IN_GUEST)).toBe(false);
+  });
+
+  it("a deactivated member (no effective roles) loses sight", () => {
+    expect(canSeeContactDetails({ userId: "u1", roles: [] })).toBe(false);
+  });
+});
+
+describe("isProfilePublic", () => {
+  it("is public on public and no_comments forums", () => {
+    expect(isProfilePublic("public", ["elector"])).toBe(true);
+    expect(isProfilePublic("no_comments", ["elector"])).toBe(true);
+  });
+
+  it("hosts_only: hosts and admins are public, electors are not", () => {
+    expect(isProfilePublic("hosts_only", ["host"])).toBe(true);
+    expect(isProfilePublic("hosts_only", ["admin"])).toBe(true);
+    expect(isProfilePublic("hosts_only", ["elector"])).toBe(false);
+  });
+
+  it("is never public on private or deactivated forums", () => {
+    expect(isProfilePublic("private", ["host"])).toBe(false);
+    expect(isProfilePublic("deactivated", ["admin"])).toBe(false);
+  });
+});
+
 describe("sysadmin oversight (read-only)", () => {
   const SYSADMIN: Viewer = { userId: "op", roles: [], sysadmin: true };
 
@@ -87,6 +123,16 @@ describe("canUseQueue", () => {
     expect(canUseQueue({ userId: "u", roles: ["admin"] })).toBe(true);
     expect(canUseQueue(SIGNED_IN_GUEST)).toBe(false);
     expect(canUseQueue(ANONYMOUS)).toBe(false);
+  });
+});
+
+describe("LOUNGE_ROLES", () => {
+  it("is exactly the roles canUseLounge lets in", () => {
+    for (const role of ROLES) {
+      expect((LOUNGE_ROLES as readonly Role[]).includes(role)).toBe(
+        canUseLounge({ userId: "u", roles: [role] }),
+      );
+    }
   });
 });
 

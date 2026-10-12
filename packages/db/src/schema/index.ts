@@ -3,6 +3,8 @@ export * from "./auth";
 export * from "./timetables";
 export * from "./topics";
 export * from "./calendar";
+export * from "./lounge";
+export * from "./push";
 export * from "./rate-limits";
 
 import { apiTokens, discordAccounts, users } from "./auth";
@@ -13,6 +15,8 @@ import {
   slotSessions,
   timeslots,
 } from "./calendar";
+import { loungeComments, loungeReactions } from "./lounge";
+import { pushSubscriptions, pushSweepState } from "./push";
 import { timetableMemberships, timetables } from "./timetables";
 import { activityEvents, comments, hearts, hostHearts, topics } from "./topics";
 
@@ -64,3 +68,13 @@ export type NewAvailabilityPattern = typeof availabilityPatterns.$inferInsert;
 
 export type SlotComment = typeof slotComments.$inferSelect;
 export type NewSlotComment = typeof slotComments.$inferInsert;
+
+export type LoungeComment = typeof loungeComments.$inferSelect;
+export type NewLoungeComment = typeof loungeComments.$inferInsert;
+
+export type LoungeReaction = typeof loungeReactions.$inferSelect;
+
+export type PushSubscription = typeof pushSubscriptions.$inferSelect;
+export type NewPushSubscription = typeof pushSubscriptions.$inferInsert;
+
+export type PushSweepState = typeof pushSweepState.$inferSelect;

@@ -1,3 +1,4 @@
+import { createECDH, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
@@ -14,6 +15,7 @@ import type {
 } from "@timetable/db";
 import {
   API_TOKEN_SCOPES,
+  PUSH_KIND_DEFAULTS,
   type Role,
   type TokenScope,
 } from "@timetable/shared";
@@ -24,12 +26,23 @@ import * as clerk from "./auth/clerk";
 import * as context from "./context";
 import type { ApiContext } from "./context";
 import * as email from "./email";
+import { env } from "./env";
+import { parsePushEnv } from "./push-config";
+import { vapidTestPair } from "./push-test-keys";
 
 vi.mock("@timetable/core", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@timetable/core")>();
   return {
     ...actual,
     addSlotComment: vi.fn(),
+    listLoungePage: vi.fn(),
+    getLoungeComment: vi.fn(),
+    startLoungeConversation: vi.fn(),
+    replyInLounge: vi.fn(),
+    setLoungeReaction: vi.fn(),
+    setLoungeCommentPinned: vi.fn(),
+    hasUnreadLounge: vi.fn(),
+    markLoungeSeen: vi.fn(),
     addSlotSession: vi.fn(),
     buildCalendar: vi.fn(),
     confirmedLocationTaken: vi.fn(),
@@ -84,6 +97,12 @@ vi.mock("@timetable/core", async (importOriginal) => {
     updateTimetableSettings: vi.fn(),
     updateTimetableProfile: vi.fn(),
     updateTimetableSlug: vi.fn(),
+    subscribePush: vi.fn(),
+    unsubscribePush: vi.fn(),
+    hasPushSubscription: vi.fn(),
+    listPushDevices: vi.fn(),
+    getMembershipDigestSettings: vi.fn(async () => ({})),
+    updateMembershipDigestSettings: vi.fn(async () => true),
   };
 });
 
@@ -244,6 +263,7 @@ function membershipFixture(
     name: null,
     image: null,
     bio: null,
+    contactDetails: null,
     slug: null,
     lastSeenFeedAt: null,
     lastSeenNotificationsAt: null,
@@ -252,6 +272,7 @@ function membershipFixture(
     digestSettings: {},
     lastDigestAt: null,
     deactivatedAt: null,
+    loungeSeenAt: null,
     createdAt: new Date("2026-01-01T00:00:00.000Z"),
     updatedAt: new Date("2026-01-01T00:00:00.000Z"),
     ...patch,
@@ -1152,6 +1173,42 @@ describe("createApiApp", () => {
       );
       expect(body.publicUrl).toContain(
         "/test-uploads/timetable-cover/timetables/",
+      );
+    });
+  });
+
+  it("signs post images for hosts and refuses electors", async () => {
+    configureStorageEnv();
+    const sign = (baseUrl: string) =>
+      fetch(`${baseUrl}/api/uploads`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          purpose: "post-image",
+          timetableIdOrSlug: "public-calendar",
+          filename: "photo.webp",
+          contentType: "image/webp",
+          size: 100,
+        }),
+      });
+    await withTestServer(async (baseUrl) => {
+      mockSession("elector-1", ["elector"]);
+      vi.mocked(core.getReadableTimetable).mockResolvedValue({
+        timetable: timetableFixture(),
+        roles: ["elector"],
+      });
+      expect((await sign(baseUrl)).status).toBe(403);
+
+      mockSession("host-1", ["host"]);
+      vi.mocked(core.getReadableTimetable).mockResolvedValue({
+        timetable: timetableFixture(),
+        roles: ["host"],
+      });
+      const res = await sign(baseUrl);
+      const body = (await res.json()) as { key: string };
+      expect(res.status).toBe(200);
+      expect(body.key).toMatch(
+        /^test-uploads\/post-image\/timetables\/11111111-1111-1111-1111-111111111111\/host-1\/[0-9a-f-]+\.webp$/,
       );
     });
   });
@@ -3479,6 +3536,916 @@ describe("createApiApp", () => {
           });
         });
       }
+    });
+  });
+});
+
+describe("Contact Details (members only)", () => {
+  const PERSON_QUERY = `query($s: String!, $u: String){
+    person(idOrSlug: $s, userId: $u) { name contactDetails contactDetailsHtml }
+  }`;
+
+  function mockPublicForum(viewerRoles: Role[]) {
+    vi.mocked(core.getReadableTimetable).mockResolvedValue({
+      timetable: timetableFixture({ privacy: "public" }),
+      roles: viewerRoles,
+    });
+    vi.mocked(core.getPerson).mockResolvedValue({
+      userId: "member-1",
+      name: "Ada",
+      image: null,
+      slug: "ada",
+      bio: "Public bio",
+      contactDetails: "ada@example.com",
+      roles: ["host"],
+      deactivatedAt: null,
+    });
+  }
+
+  async function readPerson(baseUrl: string) {
+    const res = await fetch(`${baseUrl}/graphql`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query: PERSON_QUERY,
+        variables: { s: "public-calendar", u: "member-1" },
+      }),
+    });
+    return (await res.json()) as {
+      data?: { person: Record<string, unknown> | null } | null;
+      errors?: unknown;
+    };
+  }
+
+  it("hides them from anonymous visitors to a public forum", async () => {
+    mockPublicForum([]);
+    await withTestServer(async (baseUrl) => {
+      const body = await readPerson(baseUrl);
+      expect(body.errors).toBeUndefined();
+      expect(body.data?.person).toEqual({
+        name: "Ada",
+        contactDetails: null,
+        contactDetailsHtml: null,
+      });
+    });
+  });
+
+  it("hides them from signed-in non-members", async () => {
+    mockSession("stranger-1", []);
+    mockPublicForum([]);
+    await withTestServer(async (baseUrl) => {
+      const body = await readPerson(baseUrl);
+      expect(body.data?.person?.contactDetails).toBeNull();
+    });
+  });
+
+  it("shows them to forum members", async () => {
+    mockSession("elector-1", ["elector"]);
+    mockPublicForum(["elector"]);
+    await withTestServer(async (baseUrl) => {
+      const body = await readPerson(baseUrl);
+      expect(body.data?.person?.contactDetails).toBe("ada@example.com");
+      expect(body.data?.person?.contactDetailsHtml).toContain(
+        "ada@example.com",
+      );
+    });
+  });
+});
+
+describe("{host} Lounge (hosts and admins only, off by default)", () => {
+  const LOUNGE = `query($s: String!){
+    lounge(idOrSlug: $s) { nextCursor conversations { id } }
+    loungeUnread(idOrSlug: $s)
+  }`;
+  const lounge = (on: boolean) =>
+    timetableFixture({ settings: on ? { lounge: { enabled: true } } : {} });
+
+  async function gql(
+    baseUrl: string,
+    query: string,
+    variables: Record<string, unknown> = { s: "public-calendar" },
+  ) {
+    const res = await fetch(`${baseUrl}/graphql`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, variables }),
+    });
+    return (await res.json()) as {
+      data?: Record<string, unknown> | null;
+      errors?: { message: string }[];
+    };
+  }
+
+  function forum(on: boolean, roles: Role[]) {
+    vi.mocked(core.getReadableTimetable).mockResolvedValue({
+      timetable: lounge(on),
+      roles,
+    });
+    vi.mocked(core.listLoungePage).mockResolvedValue({
+      pinned: [],
+      conversations: [],
+      nextCursor: null,
+    });
+    vi.mocked(core.hasUnreadLounge).mockResolvedValue(true);
+  }
+
+  it("is invisible to electors", async () => {
+    mockSession("elector-1", ["elector"]);
+    forum(true, ["elector"]);
+    await withTestServer(async (baseUrl) => {
+      const body = await gql(baseUrl, LOUNGE);
+      expect(body.data).toEqual({ lounge: null, loungeUnread: false });
+      expect(core.listLoungePage).not.toHaveBeenCalled();
+    });
+  });
+
+  it("is invisible to hosts while the forum has it switched off", async () => {
+    mockSession("host-1", ["host"]);
+    forum(false, ["host"]);
+    await withTestServer(async (baseUrl) => {
+      const body = await gql(baseUrl, LOUNGE);
+      expect(body.data).toEqual({ lounge: null, loungeUnread: false });
+    });
+  });
+
+  it("opens to hosts once switched on", async () => {
+    mockSession("host-1", ["host"]);
+    forum(true, ["host"]);
+    await withTestServer(async (baseUrl) => {
+      const body = await gql(baseUrl, LOUNGE);
+      expect(body.errors).toBeUndefined();
+      expect(body.data).toEqual({
+        lounge: { nextCursor: null, conversations: [] },
+        loungeUnread: true,
+      });
+    });
+  });
+
+  it("refuses an elector's post, and ❤️ as a react", async () => {
+    const post = {
+      id: "33333333-3333-3333-3333-333333333333",
+      timetableId: "11111111-1111-1111-1111-111111111111",
+      parentId: null,
+      rootId: null,
+      authorId: "host-1",
+      body: "hello",
+      lastActivityAt: new Date(),
+      hiddenAt: null,
+      hiddenByUserId: null,
+      deletedAt: null,
+      editedAt: null,
+      pinnedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    vi.mocked(core.getLoungeComment).mockResolvedValue(post);
+    vi.mocked(core.getTimetableById).mockResolvedValue(lounge(true));
+    await withTestServer(async (baseUrl) => {
+      mockSession("elector-1", ["elector"]);
+      forum(true, ["elector"]);
+      const started = await gql(
+        baseUrl,
+        `mutation($s: String!){ startLoungeConversation(idOrSlug: $s, body: "hi") }`,
+      );
+      expect(started.errors?.length).toBeGreaterThan(0);
+      expect(core.startLoungeConversation).not.toHaveBeenCalled();
+
+      mockSession("host-1", ["host"]);
+      const react = (emoji: string) =>
+        gql(
+          baseUrl,
+          `mutation($e: String!){ setLoungeReaction(commentId: "${post.id}", emoji: $e, on: true) }`,
+          { e: emoji },
+        );
+      expect((await react("❤️")).errors?.length).toBeGreaterThan(0);
+      expect(core.setLoungeReaction).not.toHaveBeenCalled();
+      expect((await react("👍")).errors).toBeUndefined();
+      expect(core.setLoungeReaction).toHaveBeenCalledWith(
+        post.id,
+        "host-1",
+        "👍",
+        true,
+      );
+    });
+  });
+
+  it("lets only admins pin", async () => {
+    const post = {
+      id: "33333333-3333-3333-3333-333333333333",
+      timetableId: "11111111-1111-1111-1111-111111111111",
+      parentId: null,
+      rootId: null,
+      authorId: "host-1",
+      body: "hello",
+      lastActivityAt: new Date(),
+      hiddenAt: null,
+      hiddenByUserId: null,
+      deletedAt: null,
+      editedAt: null,
+      pinnedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    vi.mocked(core.getLoungeComment).mockResolvedValue(post);
+    vi.mocked(core.getTimetableById).mockResolvedValue(lounge(true));
+    const PIN = `mutation { pinLoungeConversation(commentId: "${post.id}", pinned: true) }`;
+    await withTestServer(async (baseUrl) => {
+      mockSession("host-1", ["host"]);
+      expect((await gql(baseUrl, PIN)).errors?.length).toBeGreaterThan(0);
+      expect(core.setLoungeCommentPinned).not.toHaveBeenCalled();
+      mockSession("admin-1", ["admin"]);
+      expect((await gql(baseUrl, PIN)).errors).toBeUndefined();
+      expect(core.setLoungeCommentPinned).toHaveBeenCalledWith(
+        post.id,
+        true,
+        "admin-1",
+      );
+    });
+  });
+});
+
+describe("{host} Lounge — hidden and deleted posts", () => {
+  const settings = { lounge: { enabled: true } };
+  const base = {
+    id: "33333333-3333-3333-3333-333333333333",
+    timetableId: "11111111-1111-1111-1111-111111111111",
+    parentId: null,
+    rootId: null,
+    authorId: "host-1",
+    body: "hello",
+    lastActivityAt: new Date(),
+    hiddenAt: null as Date | null,
+    hiddenByUserId: null,
+    deletedAt: null as Date | null,
+    editedAt: null,
+    pinnedAt: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+  const post = async (baseUrl: string, query: string) =>
+    (await (
+      await fetch(`${baseUrl}/graphql`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query }),
+      })
+    ).json()) as { errors?: unknown[] };
+  const REACT = `mutation { setLoungeReaction(commentId: "${base.id}", emoji: "👍", on: true) }`;
+  const REPLY = `mutation { replyInLounge(commentId: "${base.id}", body: "still here") }`;
+
+  it("puts a hidden post out of reach for everyone but admins", async () => {
+    vi.mocked(core.setLoungeReaction).mockClear();
+    vi.mocked(core.getTimetableById).mockResolvedValue(
+      timetableFixture({ settings }),
+    );
+    vi.mocked(core.getLoungeComment).mockResolvedValue({
+      ...base,
+      hiddenAt: new Date(),
+    });
+    await withTestServer(async (baseUrl) => {
+      mockSession("host-1", ["host"]);
+      expect((await post(baseUrl, REACT)).errors?.length).toBeGreaterThan(0);
+      expect(core.setLoungeReaction).not.toHaveBeenCalled();
+      mockSession("admin-1", ["admin"]);
+      expect((await post(baseUrl, REACT)).errors).toBeUndefined();
+    });
+  });
+
+  it("keeps a deleted post's chain open while replies hang off it", async () => {
+    vi.mocked(core.replyInLounge).mockClear();
+    vi.mocked(core.getTimetableById).mockResolvedValue(
+      timetableFixture({ settings }),
+    );
+    vi.mocked(core.getLoungeComment).mockResolvedValue({
+      ...base,
+      deletedAt: new Date(),
+    });
+    vi.mocked(core.replyInLounge).mockResolvedValue({
+      ...base,
+      id: "44444444-4444-4444-4444-444444444444",
+      parentId: base.id,
+      rootId: base.id,
+    });
+    await withTestServer(async (baseUrl) => {
+      mockSession("host-2", ["host"]);
+      expect((await post(baseUrl, REPLY)).errors).toBeUndefined();
+      expect(core.replyInLounge).toHaveBeenCalled();
+    });
+  });
+});
+
+describe("pushPublicKey (Web Push step 2; plan §2 finding 1)", () => {
+  const QUERY = "{ pushPublicKey }";
+  const original = env.push;
+  afterEach(() => {
+    env.push = original;
+  });
+
+  async function ask(baseUrl: string) {
+    const res = await fetch(`${baseUrl}/graphql`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: QUERY }),
+    });
+    return (await res.json()) as {
+      data?: { pushPublicKey: string | null };
+      errors?: unknown[];
+    };
+  }
+
+  /** A throwaway pair generated per run — never a committed key. */
+  function configure(paused = false) {
+    env.push = parsePushEnv({
+      ...vapidTestPair(),
+      VAPID_SUBJECT: "mailto:push@example.com",
+      PUSH_PAUSED: paused ? "true" : "",
+    }).config;
+    return env.push!.publicKey;
+  }
+
+  it("is null when no VAPID keys are configured (the test env has none)", async () => {
+    expect(original).toBeNull();
+    mockSession("user-1", ["elector"]);
+    await withTestServer(async (baseUrl) => {
+      expect(await ask(baseUrl)).toEqual({ data: { pushPublicKey: null } });
+    });
+  });
+
+  it("returns the key to a signed-in member, paused or not", async () => {
+    for (const paused of [false, true]) {
+      const key = configure(paused);
+      mockSession("user-1", ["elector"]);
+      await withTestServer(async (baseUrl) => {
+        expect(await ask(baseUrl)).toEqual({ data: { pushPublicKey: key } });
+      });
+    }
+  });
+
+  it("is null signed out, under view-as, and for a personal API token", async () => {
+    configure();
+    const previewing = testContext("user-1", ["elector"]);
+    for (const ctx of [
+      testContext(null),
+      {
+        ...previewing,
+        impersonation: { actorId: "admin-1", timetableId: "t-1" },
+      },
+      testContext("user-1", ["elector"], { id: "token-1", scopes: [] }),
+    ]) {
+      vi.mocked(context.buildContext).mockResolvedValue(ctx);
+      await withTestServer(async (baseUrl) => {
+        expect(await ask(baseUrl)).toEqual({ data: { pushPublicKey: null } });
+      });
+    }
+  });
+});
+
+describe("Web Push step 2b: device routes, device reads, Push switches", () => {
+  const original = env.push;
+  const ENDPOINT = "https://fcm.googleapis.com/fcm/send/device-abc123";
+
+  /** Fresh browser-side payload keys: a real P-256 point and a 16-byte
+   * secret, generated per run like the VAPID pair. */
+  function browserKeys() {
+    const ecdh = createECDH("prime256v1");
+    ecdh.generateKeys();
+    return {
+      p256dh: ecdh.getPublicKey().toString("base64url"),
+      auth: randomBytes(16).toString("base64url"),
+    };
+  }
+
+  function configure() {
+    env.push = parsePushEnv({
+      ...vapidTestPair(),
+      VAPID_SUBJECT: "mailto:push@example.com",
+      PUSH_PAUSED: "",
+    }).config;
+  }
+
+  const device = {
+    id: "66666666-6666-6666-6666-666666666666",
+    label: "Chrome on Android",
+    createdAt: new Date("2026-10-03T09:00:00.000Z"),
+    lastSentAt: null,
+    current: true,
+  };
+
+  afterEach(() => {
+    env.push = original;
+    vi.mocked(core.subscribePush).mockReset();
+    vi.mocked(core.unsubscribePush).mockReset();
+    vi.mocked(core.hasPushSubscription).mockReset();
+    vi.mocked(core.listPushDevices).mockReset();
+    vi.mocked(core.updateMembershipDigestSettings).mockClear();
+    vi.mocked(core.getMembershipDigestSettings).mockReset();
+    vi.mocked(core.getMembershipDigestSettings).mockResolvedValue({});
+  });
+
+  async function subscribe(
+    baseUrl: string,
+    body: unknown,
+    headers: Record<string, string> = {},
+  ) {
+    return fetch(`${baseUrl}/api/push-subscriptions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...headers },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async function unsubscribe(
+    baseUrl: string,
+    body: unknown,
+    headers: Record<string, string> = {},
+  ) {
+    return fetch(`${baseUrl}/api/push-subscriptions`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json", ...headers },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async function gql(baseUrl: string, query: string, variables = {}) {
+    const res = await fetch(`${baseUrl}/graphql`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, variables }),
+    });
+    return (await res.json()) as {
+      data?: Record<string, unknown> | null;
+      errors?: { message: string }[];
+    };
+  }
+
+  describe("POST/DELETE /api/push-subscriptions", () => {
+    it("answers 503 on both routes while push is off (no VAPID keys)", async () => {
+      expect(original).toBeNull();
+      mockSession("user-1", ["elector"]);
+      await withTestServer(async (baseUrl) => {
+        const on = await subscribe(baseUrl, {
+          endpoint: ENDPOINT,
+          keys: browserKeys(),
+        });
+        expect(on.status).toBe(503);
+        const off = await unsubscribe(baseUrl, { endpoint: ENDPOINT });
+        expect(off.status).toBe(503);
+      });
+      expect(core.subscribePush).not.toHaveBeenCalled();
+      expect(core.unsubscribePush).not.toHaveBeenCalled();
+    });
+
+    it("refuses a view-as preview, by header and by context", async () => {
+      configure();
+      mockSession("admin-1", ["admin"]);
+      await withTestServer(async (baseUrl) => {
+        const res = await subscribe(
+          baseUrl,
+          { endpoint: ENDPOINT, keys: browserKeys() },
+          { "x-view-as": "forum:user-2" },
+        );
+        expect(res.status).toBe(403);
+        await expect(res.json()).resolves.toEqual({
+          error: "Alerts can't be changed in a preview",
+        });
+      });
+      vi.mocked(context.buildContext).mockResolvedValue({
+        ...testContext("user-2", ["elector"]),
+        impersonation: { actorId: "admin-1", timetableId: "t-1" },
+      });
+      await withTestServer(async (baseUrl) => {
+        const res = await unsubscribe(baseUrl, { endpoint: ENDPOINT });
+        expect(res.status).toBe(403);
+      });
+      expect(core.subscribePush).not.toHaveBeenCalled();
+      expect(core.unsubscribePush).not.toHaveBeenCalled();
+    });
+
+    it("refuses a personal API token", async () => {
+      configure();
+      if (!real.buildContext) throw new Error("real buildContext missing");
+      vi.mocked(context.buildContext).mockImplementation(real.buildContext);
+      await withTestServer(async (baseUrl) => {
+        for (const res of [
+          await subscribe(
+            baseUrl,
+            { endpoint: ENDPOINT, keys: browserKeys() },
+            { Authorization: "Bearer tpk_integration-test-secret" },
+          ),
+          await unsubscribe(
+            baseUrl,
+            { endpoint: ENDPOINT },
+            { Authorization: "Bearer tpk_integration-test-secret" },
+          ),
+        ]) {
+          expect(res.status).toBe(403);
+          await expect(res.json()).resolves.toEqual({
+            error: "Alerts can only be changed from a signed-in browser",
+          });
+        }
+      });
+      expect(core.subscribePush).not.toHaveBeenCalled();
+      expect(core.unsubscribePush).not.toHaveBeenCalled();
+    });
+
+    it("answers 401 when signed out", async () => {
+      configure();
+      await withTestServer(async (baseUrl) => {
+        const res = await subscribe(baseUrl, {
+          endpoint: ENDPOINT,
+          keys: browserKeys(),
+        });
+        expect(res.status).toBe(401);
+      });
+    });
+
+    it("refuses endpoints off the push-service allowlist", async () => {
+      configure();
+      mockSession("user-1", ["elector"]);
+      await withTestServer(async (baseUrl) => {
+        for (const endpoint of [
+          "http://fcm.googleapis.com/fcm/send/x",
+          "https://evil.example.com/push",
+          "https://evilnotify.windows.com/w/x",
+          "https://127.0.0.1/push",
+          42,
+          undefined,
+        ]) {
+          const res = await subscribe(baseUrl, {
+            endpoint,
+            keys: browserKeys(),
+          });
+          expect(res.status).toBe(400);
+          await expect(res.json()).resolves.toEqual({
+            error: "Invalid push subscription",
+          });
+        }
+      });
+      expect(core.subscribePush).not.toHaveBeenCalled();
+    });
+
+    it("refuses keys that are not a 65-byte P-256 point and a 16-byte secret", async () => {
+      configure();
+      mockSession("user-1", ["elector"]);
+      const good = browserKeys();
+      const offCurve = Buffer.alloc(65, 1);
+      offCurve[0] = 0x04;
+      await withTestServer(async (baseUrl) => {
+        for (const keys of [
+          undefined,
+          {},
+          { p256dh: good.p256dh },
+          { p256dh: good.p256dh, auth: randomBytes(15).toString("base64url") },
+          { p256dh: randomBytes(64).toString("base64url"), auth: good.auth },
+          { p256dh: offCurve.toString("base64url"), auth: good.auth },
+          { p256dh: "not base64!", auth: good.auth },
+        ]) {
+          const res = await subscribe(baseUrl, { endpoint: ENDPOINT, keys });
+          expect(res.status).toBe(400);
+          await expect(res.json()).resolves.toEqual({
+            error: "Invalid push subscription keys",
+          });
+        }
+      });
+      expect(core.subscribePush).not.toHaveBeenCalled();
+    });
+
+    it("subscribes through core and returns the device without its endpoint or keys", async () => {
+      configure();
+      mockSession("user-1", ["elector"]);
+      const keys = browserKeys();
+      vi.mocked(core.subscribePush).mockResolvedValue({
+        ok: true,
+        created: true,
+        device,
+      });
+      const logged: unknown[] = [];
+      const spies = (["log", "warn", "error", "info"] as const).map((level) =>
+        vi.spyOn(console, level).mockImplementation((...args) => {
+          logged.push(...args);
+        }),
+      );
+      try {
+        await withTestServer(async (baseUrl) => {
+          const res = await subscribe(baseUrl, {
+            endpoint: ENDPOINT,
+            keys,
+            label: "Chrome on Android",
+          });
+          expect(res.status).toBe(201);
+          const text = await res.text();
+          expect(JSON.parse(text)).toEqual({
+            subscribed: true,
+            created: true,
+            device: {
+              id: device.id,
+              label: "Chrome on Android",
+              createdAt: "2026-10-03T09:00:00.000Z",
+              lastSentAt: null,
+            },
+          });
+          expect(text).not.toContain(ENDPOINT);
+          expect(text).not.toContain(keys.p256dh);
+        });
+      } finally {
+        for (const spy of spies) spy.mockRestore();
+      }
+      expect(core.subscribePush).toHaveBeenCalledWith("user-1", {
+        endpoint: ENDPOINT,
+        p256dh: keys.p256dh,
+        auth: keys.auth,
+        label: "Chrome on Android",
+      });
+      // Never logged: not the endpoint, not the keys (plan §3.1).
+      const all = JSON.stringify(logged);
+      expect(all).not.toContain("device-abc123");
+      expect(all).not.toContain(keys.p256dh);
+      expect(all).not.toContain(keys.auth);
+    });
+
+    it("answers 200 when a known device refreshes its keys", async () => {
+      configure();
+      mockSession("user-1", ["elector"]);
+      vi.mocked(core.subscribePush).mockResolvedValue({
+        ok: true,
+        created: false,
+        device,
+      });
+      await withTestServer(async (baseUrl) => {
+        const res = await subscribe(baseUrl, {
+          endpoint: ENDPOINT,
+          keys: browserKeys(),
+        });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject({ created: false });
+      });
+    });
+
+    it("maps core's invalid to 400, taken to 409 and cap to 409", async () => {
+      configure();
+      mockSession("user-1", ["elector"]);
+      const cases = [
+        ["invalid", 400, { error: "Invalid push subscription" }],
+        [
+          "taken",
+          409,
+          {
+            error: "Alerts on this browser belong to another account",
+            reason: "taken",
+          },
+        ],
+        [
+          "cap",
+          409,
+          {
+            error:
+              "Alerts are already on for 10 devices — turn them off on one first",
+            reason: "cap",
+          },
+        ],
+      ] as const;
+      await withTestServer(async (baseUrl) => {
+        for (const [reason, status, body] of cases) {
+          vi.mocked(core.subscribePush).mockResolvedValueOnce({
+            ok: false,
+            reason,
+          });
+          const res = await subscribe(baseUrl, {
+            endpoint: ENDPOINT,
+            keys: browserKeys(),
+          });
+          expect(res.status).toBe(status);
+          expect(await res.json()).toEqual(body);
+        }
+      });
+    });
+
+    it("rate-limits subscribes at 30 an hour, counting only well-formed ones", async () => {
+      configure();
+      mockSession("push-churner", ["elector"]);
+      vi.mocked(core.subscribePush).mockResolvedValue({
+        ok: true,
+        created: false,
+        device,
+      });
+      await withTestServer(async (baseUrl) => {
+        // Malformed requests are refused before the limiter and cost nothing.
+        for (let i = 0; i < 5; i++) {
+          const res = await subscribe(baseUrl, { endpoint: "nope" });
+          expect(res.status).toBe(400);
+        }
+        for (let i = 0; i < 30; i++) {
+          const res = await subscribe(baseUrl, {
+            endpoint: ENDPOINT,
+            keys: browserKeys(),
+          });
+          expect(res.status).toBe(200);
+        }
+        const res = await subscribe(baseUrl, {
+          endpoint: ENDPOINT,
+          keys: browserKeys(),
+        });
+        expect(res.status).toBe(429);
+        expect(res.headers.get("retry-after")).toBeTruthy();
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toMatch(
+          /^You're turning alerts on too often — try again in \d+ minutes\.$/,
+        );
+      });
+      expect(core.subscribePush).toHaveBeenCalledTimes(30);
+    });
+
+    it("unsubscribes only this device, through core", async () => {
+      configure();
+      mockSession("user-1", ["elector"]);
+      vi.mocked(core.unsubscribePush).mockResolvedValueOnce(true);
+      vi.mocked(core.unsubscribePush).mockResolvedValueOnce(false);
+      await withTestServer(async (baseUrl) => {
+        const first = await unsubscribe(baseUrl, { endpoint: ENDPOINT });
+        expect(first.status).toBe(200);
+        expect(await first.json()).toEqual({ unsubscribed: true });
+        const again = await unsubscribe(baseUrl, { endpoint: ENDPOINT });
+        expect(await again.json()).toEqual({ unsubscribed: false });
+        const bad = await unsubscribe(baseUrl, {});
+        expect(bad.status).toBe(400);
+      });
+      expect(core.unsubscribePush).toHaveBeenCalledTimes(2);
+      expect(core.unsubscribePush).toHaveBeenCalledWith("user-1", ENDPOINT);
+    });
+  });
+
+  describe("myPushDeviceEnabled / myPushDevices", () => {
+    const ENABLED = `query($e: String!) { myPushDeviceEnabled(endpoint: $e) }`;
+    const DEVICES = `query($e: String) {
+      myPushDevices(endpoint: $e) { id label createdAt lastSentAt current }
+    }`;
+
+    it("answers false / null while push is off, signed out, under view-as, and for a token", async () => {
+      vi.mocked(core.hasPushSubscription).mockResolvedValue(true);
+      vi.mocked(core.listPushDevices).mockResolvedValue([device]);
+      // Push off, signed in.
+      mockSession("user-1", ["elector"]);
+      await withTestServer(async (baseUrl) => {
+        expect(await gql(baseUrl, ENABLED, { e: ENDPOINT })).toEqual({
+          data: { myPushDeviceEnabled: false },
+        });
+        expect(await gql(baseUrl, DEVICES, { e: ENDPOINT })).toEqual({
+          data: { myPushDevices: null },
+        });
+      });
+      configure();
+      for (const ctx of [
+        testContext(null),
+        {
+          ...testContext("user-1", ["elector"]),
+          impersonation: { actorId: "admin-1", timetableId: "t-1" },
+        },
+        testContext("user-1", ["elector"], { id: "token-1", scopes: [] }),
+      ]) {
+        vi.mocked(context.buildContext).mockResolvedValue(ctx);
+        await withTestServer(async (baseUrl) => {
+          expect(await gql(baseUrl, ENABLED, { e: ENDPOINT })).toEqual({
+            data: { myPushDeviceEnabled: false },
+          });
+          expect(await gql(baseUrl, DEVICES, { e: ENDPOINT })).toEqual({
+            data: { myPushDevices: null },
+          });
+        });
+      }
+      expect(core.hasPushSubscription).not.toHaveBeenCalled();
+      expect(core.listPushDevices).not.toHaveBeenCalled();
+    });
+
+    it("answers for this user's own device and lists labels and dates only", async () => {
+      configure();
+      mockSession("user-1", ["elector"]);
+      vi.mocked(core.hasPushSubscription).mockResolvedValue(true);
+      vi.mocked(core.listPushDevices).mockResolvedValue([device]);
+      await withTestServer(async (baseUrl) => {
+        expect(await gql(baseUrl, ENABLED, { e: ENDPOINT })).toEqual({
+          data: { myPushDeviceEnabled: true },
+        });
+        expect(await gql(baseUrl, DEVICES, { e: ENDPOINT })).toEqual({
+          data: {
+            myPushDevices: [
+              {
+                id: device.id,
+                label: "Chrome on Android",
+                createdAt: "2026-10-03T09:00:00.000Z",
+                lastSentAt: null,
+                current: true,
+              },
+            ],
+          },
+        });
+        // The type has no endpoint field to ask for.
+        const probe = await gql(baseUrl, `{ myPushDevices { endpoint } }`);
+        expect(probe.errors?.[0]?.message).toMatch(/endpoint/);
+        // An oversized "endpoint" is never one of theirs — no DB read.
+        expect(
+          await gql(baseUrl, ENABLED, { e: `https://x/${"a".repeat(1100)}` }),
+        ).toEqual({ data: { myPushDeviceEnabled: false } });
+      });
+      expect(core.hasPushSubscription).toHaveBeenCalledTimes(1);
+      expect(core.hasPushSubscription).toHaveBeenCalledWith("user-1", ENDPOINT);
+      expect(core.listPushDevices).toHaveBeenCalledWith("user-1", ENDPOINT);
+    });
+  });
+
+  describe("Push switches on updateMyForumDigestSettings", () => {
+    const UPDATE = `mutation($s: String!, $k: String, $p: String) {
+      updateMyForumDigestSettings(idOrSlug: $s, kindsJson: $k, pushKindsJson: $p)
+    }`;
+    const READ = `query($s: String!) {
+      timetable: forum(idOrSlug: $s) { viewerPushKinds }
+    }`;
+
+    function mockForum() {
+      vi.mocked(core.getReadableTimetable).mockResolvedValue({
+        timetable: timetableFixture(),
+        roles: ["elector"],
+      });
+    }
+
+    it("stores digestSettings.push and leaves the email switches alone", async () => {
+      mockSession("user-1", ["elector"]);
+      mockForum();
+      await withTestServer(async (baseUrl) => {
+        const res = await gql(baseUrl, UPDATE, {
+          s: "public-calendar",
+          p: JSON.stringify({ replies: false, newTopics: true }),
+        });
+        expect(res).toEqual({ data: { updateMyForumDigestSettings: true } });
+      });
+      expect(core.updateMembershipDigestSettings).toHaveBeenCalledWith(
+        "11111111-1111-1111-1111-111111111111",
+        "user-1",
+        { push: { replies: false, newTopics: true } },
+      );
+    });
+
+    it("sends email kinds and push kinds as separate fields", async () => {
+      mockSession("user-1", ["elector"]);
+      mockForum();
+      await withTestServer(async (baseUrl) => {
+        await gql(baseUrl, UPDATE, {
+          s: "public-calendar",
+          k: JSON.stringify({ replies: true }),
+          p: JSON.stringify({ replies: false }),
+        });
+      });
+      expect(core.updateMembershipDigestSettings).toHaveBeenCalledWith(
+        "11111111-1111-1111-1111-111111111111",
+        "user-1",
+        { kinds: { replies: true }, push: { replies: false } },
+      );
+    });
+
+    it("rejects drafts, unknown kinds, non-booleans and malformed JSON", async () => {
+      mockSession("user-1", ["elector"]);
+      mockForum();
+      const cases: [string, string][] = [
+        [JSON.stringify({ drafts: true }), "drafts has no push alerts"],
+        [JSON.stringify({ bogus: true }), "Unknown push kind: bogus"],
+        [
+          JSON.stringify({ replies: "yes" }),
+          "Push switch replies must be true or false",
+        ],
+        ["{not json", "pushKindsJson must be a JSON object"],
+        ["[true]", "pushKindsJson must be a JSON object"],
+      ];
+      await withTestServer(async (baseUrl) => {
+        for (const [p, message] of cases) {
+          const res = await gql(baseUrl, UPDATE, { s: "public-calendar", p });
+          expect(res.errors?.[0]?.message).toBe(message);
+        }
+      });
+      expect(core.updateMembershipDigestSettings).not.toHaveBeenCalled();
+    });
+
+    it("reads back the effective switches: stored over defaults, no drafts", async () => {
+      mockSession("user-1", ["elector"]);
+      mockForum();
+      vi.mocked(core.getMembershipDigestSettings).mockResolvedValue({
+        kinds: { replies: true },
+        push: { replies: false, newTopics: true, drafts: true },
+      });
+      await withTestServer(async (baseUrl) => {
+        const res = await gql(baseUrl, READ, { s: "public-calendar" });
+        const kinds = JSON.parse(
+          (res.data?.timetable as { viewerPushKinds: string }).viewerPushKinds,
+        ) as Record<string, boolean>;
+        expect(kinds).toMatchObject({
+          replies: false, // stored off over a default on
+          newTopics: true, // stored on over a default off
+          comments: true, // default on
+          hearts: false, // default off
+        });
+        expect(kinds).not.toHaveProperty("drafts");
+        expect(Object.keys(kinds)).toHaveLength(
+          Object.keys(PUSH_KIND_DEFAULTS).length - 1,
+        );
+      });
     });
   });
 });

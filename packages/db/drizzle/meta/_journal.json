@@ -306,8 +306,29 @@
     {
       "idx": 43,
       "version": "7",
-      "when": 1791817263667,
-      "tag": "0043_discord_account",
+      "when": 1790773659578,
+      "tag": "0043_contact_details",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1790784770495,
+      "tag": "0044_lounge",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1790993801435,
+      "tag": "0045_web_push",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1791817852126,
+      "tag": "0046_discord_account",
       "breakpoints": true
     }
   ]

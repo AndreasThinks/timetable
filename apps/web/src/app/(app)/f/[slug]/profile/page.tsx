@@ -14,14 +14,18 @@ type Data = {
   person: {
     name: string | null;
     bio: string | null;
+    contactDetails: string | null;
     image: string | null;
+    roles: string[];
   } | null;
+  timetable: { privacy: string } | null;
 };
 
 const QUERY = `query Profile($s: String!) {
   me { email }
   myDiscordAccount { ${DISCORD_ACCOUNT_FIELDS} }
-  person(idOrSlug: $s) { name bio image }
+  person(idOrSlug: $s) { name bio contactDetails image roles }
+  timetable: forum(idOrSlug: $s) { privacy }
 }`;
 
 /** Profile inside the timetable shell (QA #59 round 3). Name/photo/bio are
@@ -46,6 +50,7 @@ export default async function TimetableProfilePage({
       slug={slug}
       profile={data.person}
       discord={data.myDiscordAccount}
+      privacy={data.timetable?.privacy ?? "private"}
     />
   );
 }

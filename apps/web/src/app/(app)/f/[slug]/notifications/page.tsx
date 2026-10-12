@@ -1,11 +1,16 @@
+import { cookies } from "next/headers";
 import Link from "next/link";
 
 import { isAdmin, type Role } from "@timetable/shared";
 
 import { ActivityRoleFilter } from "@/components/ActivityRoleFilter";
 import { ActorFilter } from "@/components/ActorFilter";
+import { AlertsLine } from "@/components/AlertsLine";
 import { Avatar } from "@/components/Avatar";
-import { DigestSettingsForm } from "@/components/DigestSettingsForm";
+import {
+  DigestSettingsForm,
+  parseViewerPushKinds,
+} from "@/components/DigestSettingsForm";
 import { EmptyState } from "@/components/EmptyState";
 import { MarkNotificationsSeen } from "@/components/MarkNotificationsSeen";
 import { PersonChip } from "@/components/PersonChip";
@@ -17,6 +22,7 @@ import {
   roleLabel,
 } from "@/lib/timetableSettings";
 import { topicPath } from "@/lib/topicPath";
+import { parseViewAs, VIEW_AS_COOKIE } from "@/lib/userPreview";
 
 type Notification = {
   commentId: string;
@@ -27,7 +33,9 @@ type Notification = {
     | "session_pencilled"
     | "session_confirmed"
     | "session_cleared"
-    | "sent_back_to_drafting";
+    | "sent_back_to_drafting"
+    | "lounge_reply"
+    | "lounge_mention";
   authorId: string;
   authorName: string | null;
   authorImage: string | null;
@@ -39,6 +47,8 @@ type Notification = {
   topicTitle: string;
   topicSlug: string | null;
   topicHostSlug: string | null;
+  /** {host} Lounge kinds: the conversation (their topic fields are empty). */
+  loungeRootId: string | null;
 };
 
 type Data = {
@@ -46,18 +56,27 @@ type Data = {
     viewerRoles: string[];
     settings: string;
     viewerDigestSettings: string;
+    /** push-column (#368 step 5): effective Push switches, JSON. */
+    viewerPushKinds: string;
   } | null;
-  me: { notificationSettings: string } | null;
+  me: { id: string; notificationSettings: string } | null;
   notifications: Notification[];
+  /** Web Push (#368): null when push isn't configured, signed out, or in
+   * a view-as preview — and then no alerts control renders. */
+  pushPublicKey: string | null;
 };
 
 const QUERY = `
   query Notifications($s: String!) {
-    timetable: forum(idOrSlug: $s) { viewerRoles settings viewerDigestSettings }
-    me { notificationSettings }
+    timetable: forum(idOrSlug: $s) {
+      viewerRoles settings viewerDigestSettings viewerPushKinds
+    }
+    me { id notificationSettings }
+    pushPublicKey
     notifications(idOrSlug: $s) {
       commentId kind authorId authorName authorImage authorRoles body
       visibility createdAt topicId topicTitle topicSlug topicHostSlug
+      loungeRootId
     }
   }
 `;
@@ -65,6 +84,9 @@ const QUERY = `
 const KIND_VERBS: Record<Notification["kind"], string> = {
   reply: "replied to your comment on",
   mention: "mentioned you on",
+  // The {host} Lounge (2026-09-30) — the "title" is the room's name.
+  lounge_reply: "replied to your post in",
+  lounge_mention: "mentioned you in",
   comment: "commented on",
   // Calendar v2 (QA 2026-08-03): session events for topics you ❤️'d.
   session_pencilled: "pencilled in a session for",
@@ -115,6 +137,15 @@ function cardLinks(
   if (isSessionKind(n.kind)) {
     return { href: `/f/${slug}/calendar`, replyHref: null };
   }
+  if (n.kind === "lounge_reply" || n.kind === "lounge_mention") {
+    // The conversation named, so an older one still loads (?c=), and the
+    // chain-tail composer answers ?reply= as it does on a topic.
+    const base = `/f/${slug}/lounge?c=${n.loungeRootId ?? n.commentId}`;
+    return {
+      href: `${base}#comment-${n.commentId}`,
+      replyHref: `${base}&reply=${n.commentId}#comment-${n.commentId}`,
+    };
+  }
   if (n.kind === "sent_back_to_drafting") {
     // Your card on My Topics, drafting tab open — where the admin's
     // reason lives and where your Ready switch is. The tab must be
@@ -144,12 +175,16 @@ function NotificationCard({
   n,
   slug,
   viewerIsAdmin,
+  loungeTitle,
 }: {
   n: Notification;
   slug: string;
   viewerIsAdmin: boolean;
+  /** "{host} Lounge" — what Lounge kinds link as their title. */
+  loungeTitle: string;
 }) {
   const { href, replyHref } = cardLinks(n, slug, viewerIsAdmin);
+  const title = n.kind.startsWith("lounge_") ? loungeTitle : n.topicTitle;
   const detail = isSessionKind(n.kind)
     ? sessionWhen(n.body)
     : n.body
@@ -167,7 +202,7 @@ function NotificationCard({
               <b>{n.authorName ?? "Someone"}</b>
             </PersonChip>{" "}
             {KIND_VERBS[n.kind]}{" "}
-            {href ? <Link href={href}>{n.topicTitle}</Link> : n.topicTitle}
+            {href ? <Link href={href}>{title}</Link> : title}
           </div>
           {detail ? (
             <div
@@ -202,9 +237,22 @@ function NotificationCard({
  * the kind switches are this forum's; the user's stored globals are the
  * display fallback for untouched memberships. Roles drive which switches
  * show (round 2); the forum's configured defaults fill untouched ones. */
-function DigestCard({ slug, data }: { slug: string; data: Data }) {
+function DigestCard({
+  slug,
+  data,
+  preview,
+}: {
+  slug: string;
+  data: Data;
+  /** In an admin's view-as preview: no device controls (the API already
+   * withholds the key there; this is the belt to its braces). */
+  preview: boolean;
+}) {
   if (!data.me) return null;
   const settings = parseTimetableSettings(data.timetable?.settings);
+  // Push is available only with keys and outside a preview — the alerts
+  // line and the Push column share this one gate (plan §2, finding 1).
+  const pushAvailable = Boolean(data.pushPublicKey) && !preview;
   return (
     <DigestSettingsForm
       slug={slug}
@@ -215,6 +263,19 @@ function DigestCard({ slug, data }: { slug: string; data: Data }) {
       forumDefaults={settings.digestKindDefaults ?? {}}
       roles={data.timetable?.viewerRoles ?? []}
       roleLabels={settings.roleLabels}
+      pushKinds={
+        pushAvailable
+          ? parseViewerPushKinds(data.timetable?.viewerPushKinds)
+          : null
+      }
+      alerts={
+        pushAvailable && data.pushPublicKey ? (
+          <AlertsLine
+            pushPublicKey={data.pushPublicKey}
+            viewerId={data.me.id}
+          />
+        ) : null
+      }
     />
   );
 }
@@ -233,6 +294,8 @@ export default async function NotificationsPage({
   const { slug } = await params;
   const { actor = "", role = "" } = await searchParams;
   const data = await gqlFetch<Data>(QUERY, { s: slug });
+  const preview =
+    parseViewAs((await cookies()).get(VIEW_AS_COOKIE)?.value, slug) !== null;
 
   const viewerRoles = data.timetable?.viewerRoles ?? [];
   if (viewerRoles.length === 0) {
@@ -270,7 +333,7 @@ export default async function NotificationsPage({
       <h3 className="section-title">Settings</h3>
       {/* Email digest preferences live with the notifications they gate
           (QA 2026-07-28 — moved off the profile page). */}
-      <DigestCard slug={slug} data={data} />
+      <DigestCard slug={slug} data={data} preview={preview} />
 
       <h3 className="section-title">Notifications</h3>
       {data.notifications.length > 0 ? (
@@ -297,6 +360,7 @@ export default async function NotificationsPage({
               n={n}
               slug={slug}
               viewerIsAdmin={viewerIsAdmin}
+              loungeTitle={`${roleLabel(settings.roleLabels, "host")} Lounge`}
             />
           ))}
         </ul>

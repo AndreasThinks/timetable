@@ -69,11 +69,14 @@ Important variables:
 | `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Web | Clerk browser SDK |
 | `CLERK_SECRET_KEY` | Web, API | Clerk server SDK and token verification |
 | `CRON_SECRET` | API | Digest job protection; required in hosted environments |
+| `SYSADMIN_EMAILS` | API | Comma-separated accounts that get the `/admin` sysadmin dashboard; unset in production = nobody. A GitHub environment variable in hosted environments |
 | `RESEND_API_KEY`, `EMAIL_FROM` | API | Digest email sending |
 | `SPACES_ENDPOINT`, `SPACES_REGION`, `SPACES_BUCKET` | API | S3-compatible object-storage target for image uploads |
 | `SPACES_KEY`, `SPACES_SECRET` | API | Object-storage credentials for signing direct browser uploads |
 | `SPACES_KEY_PREFIX`, `SPACES_PUBLIC_BASE_URL`, `SPACES_FORCE_PATH_STYLE` | API | Optional upload key namespace, CDN/custom public URL, and path-style mode |
 | `UPLOAD_MAX_IMAGE_BYTES` | API | Optional max image upload size, default `5242880` |
+| `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | API | Web Push key pair (`node scripts/generate-vapid.mjs`, one pair per environment, never rotated casually) and the `mailto:`/`https://` contact. All empty = push off; partial or invalid = the API refuses to boot in production. See `docs/WEB_PUSH.md` §11 |
+| `PUSH_PAUSED` | API | Web Push kill switch: `true` (or `1`) keeps the controls and sends nothing; read once at boot. A GitHub environment variable, so a pause survives deploys. See `docs/OPERATIONS.md` R19 |
 
 ## GitHub Actions
 
@@ -133,10 +136,17 @@ Per-environment secrets for `timetable-dev` and `production`:
 - `CRON_SECRET`
 - `RESEND_API_KEY` when digest email sending is enabled
 - `SPACES_KEY` and `SPACES_SECRET` for object-storage uploads
+- `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` and `VAPID_SUBJECT` for Web Push
+  (optional: all unset leaves push off; `VAPID_PRIVATE_KEY` is the real
+  secret, the other two are kept as secrets for simplicity). Each
+  environment gets its OWN pair; losing or rotating one means every member
+  turns alerts on again
 
 Per-environment variables:
 
 - `EMAIL_FROM` for the Resend sender identity
+- `SYSADMIN_EMAILS` (optional) — who gets the `/admin` sysadmin dashboard
+- `PUSH_PAUSED` (optional) — `true` pauses Web Push sending
 
 Both deploy workflows must pass `SPACES_KEY`/`SPACES_SECRET` through to the
 `digitalocean/app_action` env so the `${SPACES_KEY}`/`${SPACES_SECRET}`
@@ -145,6 +155,12 @@ to boot when `SPACES_BUCKET` is set without `SPACES_KEY`/`SPACES_SECRET`, so
 an app spec that grows a `SPACES_*` variable without the matching workflow env
 takes the whole deployment down (this bit the first production spec — fixed in
 PR #72). Keep app specs and workflow env in sync.
+
+The same goes for `VAPID_*` and `PUSH_PAUSED`, with one difference: the API
+treats an EMPTY value as unset, and `digitalocean/app_action` expands a
+placeholder whose secret is missing to `""`. So deploying without the VAPID
+secrets leaves push off rather than failing; only a partial or invalid set
+(say, two of the three) stops the API booting in production.
 
 ## DigitalOcean App Platform
 
@@ -205,7 +221,9 @@ backup or applying a forward fix.
 ## Clerk
 
 Use Clerk Development keys for local and dev. Use Clerk Production keys only
-for the production app (`topic.forum`).
+for the production app (`topic.forum`). The production instance is live on
+`topic.forum`, with its Frontend API at `clerk.topic.forum` (Ed confirmed,
+2026-10-03); dev's Frontend API is a `*.clerk.accounts.dev` host.
 
 Required app paths:
 
@@ -282,9 +300,10 @@ counted across App Platform instances:
 | Production | `database` | `timetable:production:api` |
 
 `RATE_LIMIT_BACKEND=database` requires `DATABASE_URL` and the
-`api_rate_limit_buckets` migration. Keep `TRUST_PROXY_HOPS=1` on DigitalOcean so
-the limiter keys by the client IP App Platform forwards instead of the proxy
-itself.
+`api_rate_limit_buckets` migration. Keep `TRUST_PROXY_HOPS=2` on DigitalOcean
+(both specs set it): App Platform sits behind Cloudflare, so the forwarded
+chain is `<client>, <cloudflare edge>`, and 2 is what makes the limiter key by
+the real client (`docs/OPERATIONS.md` R1).
 
 `/health` intentionally does not exercise the rate limiter. Use `POST /graphql`
 or an `/api/*` request in hosted smoke checks to verify the rate-limit and
@@ -435,6 +454,9 @@ deployment; `503` means object-storage env vars are missing.
 - A full container registry (`invalid content range` on push) if the
   post-deploy prune has not been running.
 - Clerk keys from the wrong instance.
+- A partial or invalid `VAPID_*` set (say, two of the three secrets): the API
+  refuses to boot in production and the deploy fails. All three empty is
+  fine (push off).
 - Missing production Clerk domain/DNS setup.
 - Database migration failure in the pre-deploy job.
 - Hosted rate limiter misconfiguration; `/health` may still pass, so check

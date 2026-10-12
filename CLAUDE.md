@@ -102,6 +102,10 @@ Lint covers everything: `apps/web` has its own Next config; the root
 - **Never run `deploy-production.yml` or touch the `topic-prod` (prod) DO app —
   production deploys are human-triggered only.** Same for repo settings,
   rulesets, and DO infrastructure (`doctl`).
+- **Clerk's production instance is on topic.forum** (Ed confirmed,
+  2026-10-03): its Frontend API is `clerk.topic.forum`. Dev and local use
+  the Clerk development instance (`*.clerk.accounts.dev`), so a sign-in
+  quirk seen on dev is not necessarily production's, and vice versa.
 - Never commit secrets. Env shape lives in `.env.example`.
 - **Term-time migration policy (2026-08-21):** while a real programme is
   running, migrations are **additive only** — add columns and tables; never
@@ -324,6 +328,22 @@ Stable names for feature pieces, so instructions can reference them precisely.
   page doesn't scroll under the card, which is the one thing this costs.
   Covered by `QueueControls.test.tsx` — the web workspace's first jsdom
   component test.
+- **submit-shortcut** — `apps/web/src/lib/submitShortcut.ts` (#361,
+  King-Mob; 2026-10-02): **Ctrl+Enter / ⌘+Enter** presses a composer's
+  send button, Gmail/GitHub-style. `isSubmitShortcut` (pure; never Shift/
+  Alt, never mid-IME) + `submitFormFrom` (`requestSubmit` on the form's
+  ONE enabled submit button — same handler, same empty check, nothing
+  while `busy` disables it, nothing if the form has several submits).
+  Wired once in `GrowingTextarea`, so every plain-text comment composer
+  has it (top-composer, chain-tail incl. the Lounge foot box, Reply box,
+  inline edit, slot chat); `MentionTextarea` lets it through with the
+  picker open (closes the list, posts the text as typed — no
+  auto-complete); `RichTextEditor`'s opt-in `submitOnShortcut` (topic
+  create/edit, Lounge opening post start/edit) outranks TipTap's
+  Mod-Enter hard break. Plain Enter is unchanged (queue-keys'
+  `submitOnEnter` still posts on it). Send buttons carry
+  `aria-keyshortcuts={SUBMIT_SHORTCUT_ARIA}`. A new composer gets it by
+  using `GrowingTextarea` in a form with one submit button.
 - **page-topic-toc** — `PageTopicToc.tsx` (Ed, 2026-08-17): the little
   table of contents under the My Topics and ❤️/💙 Topics page titles —
   the People-page profile-card topic-list look (`person-topics` styles),
@@ -453,6 +473,93 @@ Stable names for feature pieces, so instructions can reference them precisely.
   pollute it (all reading marks are mutations, refused while previewing);
   keep any NEW reading mark a mutation for that reason.
 
+- **contact-details** — `timetableMemberships.contactDetails` (migration
+  0043) + shared `canSeeContactDetails` / `isProfilePublic` +
+  `ContactDetails.tsx` (Ed, 2026-09-30, from users on public forums
+  wanting somewhere to put contact details the internet can't read): a
+  second per-forum Markdown profile box that ONLY forum members see —
+  never the public, never deactivated members, never the JSON export.
+  Stripped in `personForViewer` (members.ts), the one gate every
+  profile read passes; the export builds its people field by field and
+  deliberately omits it (Ed: nobody collects everyone's contact details
+  in one download). Readers see it ABOVE the bio (person page, host header on
+  /topics, People cards); both editors (own profile page, admin Edit on
+  People cards) are one "Profile" over Name → Contact Details → About
+  (Ed, 2026-09-30, second pass — the first pass's separate "Public
+  Profile" heading is gone: a public-sounding title over a members-only
+  box contradicted itself). Named "Contact Details",
+  not "Private Profile", so people don't write a second whole profile.
+  Contact Details and About each carry a who-can-read-this line
+  (`lib/profileLabels.ts`; About names the internet only where
+  `isProfilePublic` — public/no_comments; hosts and admins on
+  hosts_only); readers see a
+  🔒 "Members only" note on Contact Details only where the profile around
+  them is public.
+
+- **host-lounge** — the {host} Lounge (Ed, 2026-09-30;
+  `docs/host-lounge-plan.md`): ONE hosts-and-admins-only threaded room per
+  forum at `/f/[slug]/lounge` ("Faculty Lounge" on Newspeak), OFF until
+  an admin switches it on in Forum Settings. Its own tables
+  (`lounge_comments`, migration 0044), so nothing that reads topic
+  comments can see it — never fold it into `comments`. Gate: shared
+  `canUseLounge` + `isLoungeEnabled`; anyone else gets `lounge: null`
+  and the page 404s, so the room never announces itself. Conversations
+  are an opening post (Markdown, the topic editor, draft recovery) plus
+  plain-text replies threaded by the ordinary comment components through
+  **comment-thread-adapter**. **Bump order** (latest reply first, pins
+  above — admins pin), but **nothing moves while you read**:
+  `stableOrder` in `lib/loungeThread.ts` keeps the order the page first
+  showed, fresh conversations go on top, "Show older" appends below.
+  Edits, reacts and moderation never bump. **The quiet thread** (Ed's
+  option A with the nesting kept, 2026-10-02 — Lounge ONLY, through the
+  adapter's `variant: "quiet"` + `footComposer`): no bubbles or role
+  pills (role and time as muted text, "Faculty · 9h"), ONE action row
+  (reacts · Reply · ⋯ menu with Edit/Delete/Hide/Pin) that floats as a
+  hover/focus toolbar on replies on hover devices, replies nested as
+  before under an "n replies" head, and NO chain-tail composers — one
+  "Reply…" foot box per conversation answers the opening post, Reply on
+  a reply opens its inline box, `?reply=` lands on the one or the other.
+  A muted "{hosts} and {admins} only" line sits under the title; the
+  "+ New conversation" pill sits beside the heading on desktop and the
+  round "+" floats bottom-right under 640px, where the composer becomes a
+  full-screen sheet. Emoji reacts (the first in Topic)
+  via Frimousse with same-origin data in `public/emojibase` (the CSP
+  blocks its CDN); ❤️/💙 refused — they are votes here. Digest: ONE card,
+  always LAST, never in the subject line (`loadLoungeDigestCard`: new
+  conversations, replies in ones you started or chains you're in,
+  @mentions — the rest stays in the room); reacts never digest. Nav: a
+  dot, not a count. Replies/mentions reach the notifications pane. Counts
+  as Last activity; excluded from the JSON export.
+
+- **editor-image-upload** — `ImageControl` in `RichTextEditor.tsx` +
+  `lib/uploadImage.ts` (Ed, 2026-09-30): where the editor gets
+  `uploadForum` (topic create/edit, the Lounge) its image button, paste
+  and drag-and-drop upload through the same signed-PUT path as covers
+  (purpose `post-image`, hosts and admins), after `shrinkImage` re-encodes
+  anything over 1600px or 1.5 MB to WebP (GIFs untouched). Without it
+  (profile bios, which electors edit) the button still asks for an image
+  URL. Uploads are PUBLIC-READ at an unguessable address — never private,
+  Lounge included, and the Lounge composer says so. Paste: a clipboard
+  carrying image files uploads them (`imageFiles` decides; `handlePaste`
+  claims the event), anything else falls through to #359's plain-text
+  `clipboardTextParser`.
+
+- **comment-thread-adapter** — `lib/commentThreadAdapter.tsx`
+  (2026-09-30): the context CommentList, CommentActions, CommentEditForm
+  and ChainTailComposer read their mutations (and optional body / editor
+  / footer render hooks) from. Topic comments are the default; the
+  Lounge provides its own. One thread implementation for both surfaces —
+  add a new comment surface the same way, never by copying CommentList
+  (SlotDiscussion's copy is the cautionary tale). Presentation options
+  (2026-10-02, only the Lounge sets them): `variant: "quiet"` swaps the
+  bubbles + action words for the quiet thread (`QuietCommentItem` /
+  `QuietActions`; topic threads take `BubbleCommentItem` /
+  `ActionWords`, unchanged); `footComposer: true` drops every chain-tail
+  composer for ONE foot box at the root (`ChainTailComposer foot`, same
+  draft key and deep links) and opens a reply's inline box on its
+  `?reply=`; `renderFooter(comment, part)` gets `"chips"` / `"add"` in
+  the quiet variant; `mentionRoles` limits the @ picker.
+
 - **feed-position-store** — `lib/feedPosition.ts` (Ed's "going back feels
   fragile", 2026-08-28): remembers, per feed view, how many pages the
   infinite feed had appended and the scroll offset, so Back replays them
@@ -469,7 +576,81 @@ Stable names for feature pieces, so instructions can reference them precisely.
   still runs first, so a deep restore briefly shows the top and then
   jumps; fixing that would mean owning `scrollRestoration` app-wide.
 
-- **discord-account** — `discord_account` table (migration 0043) +
+- **installable-app** — `app/manifest.ts` (from `lib/appManifest.ts`) +
+  the PNGs in `apps/web/public/` + `appleWebApp`/`viewport` in the root
+  layout (#367, 2026-10-03; step 0 of `docs/web-push-plan.md`): ONE
+  standalone app named "Topic" for every forum, `start_url /timetables`
+  (the landing resolver), never per-forum branding. Icons are 📚 drawn
+  from the vendored Twemoji SVG (CC-BY 4.0) by
+  `scripts/generate-app-icons.mjs` — run by hand, commit the PNGs. The
+  manifest's colours COPY `--card`/`--bg` (a manifest can't read CSS
+  variables; `appManifest.test.ts` fails on drift). Forum layouts that
+  override `icons` must keep `apple: APPLE_TOUCH_ICON` (metadata merges
+  shallowly). The proxy matcher skips `.webmanifest` and `.png`, so no
+  host redirect, Clerk or CSP touches them; the CSP names
+  `manifest-src 'self'`. `viewport-fit=cover`, so anything pinned to a
+  screen edge pads by `env(safe-area-inset-*)` (topbar, gutters, drawer,
+  toasts, Lounge FAB/sheet); status bar stays "default" (translucent puts
+  white text on the white topbar). Never add maximum-scale/user-scalable.
+  On iOS the Home Screen app has its OWN cookies — members sign in once
+  inside it. It is also what makes iPhone alerts possible: Apple allows
+  web push only in a Home Screen app (iOS 16.4+). The one service worker,
+  `public/sw.js`, is [[web-push]]'s.
+
+- **web-push / push-sweep** — phone/desktop alerts (#368, PRs #376–#384,
+  2026-10-03; `docs/WEB_PUSH.md` is how it works, `docs/web-push-plan.md`
+  why, `docs/OPERATIONS.md` R19 the runbook). INERT until the API has all
+  three `VAPID_*` (`push-config.ts` → `env.push`; partial/invalid refuses
+  to boot in production; all empty = off) — every control gates on GraphQL
+  `pushPublicKey` being non-null, never show one without it. A device is
+  a `push_subscriptions` row keyed to the USER (covers every forum on
+  that device); the endpoint + keys are a capability — never logged,
+  never in a URL, never returned to the web app (`myPushDeviceEnabled`
+  answers a boolean). Delivery is the **push-sweep**: `sweepPush`
+  (`apps/api/src/push-sweep.ts`) once a minute inside the API claims the
+  window `(swept_until, now() − 10 s]` (advisory lock + compare-and-set,
+  `claimPushSweepWindow` in core `pushEvents.ts`, capped 10 min back),
+  reads events once, decides per recipient (`pushAudience.ts`), and sends
+  with no DB connection held — AT-MOST-ONCE by choice (a crash loses a
+  minute, never buzzes twice). Event code paths are untouched; a new kind
+  of event that should alert is a new reader in `pushEvents.ts`, never a
+  send from the mutation. Every reader re-checks visibility per recipient
+  (membership active, forum readable, thread visibility, `canReadLounge`,
+  calendar on, read-past); a deactivated member is SKIPPED, never
+  unsubscribed. `PUSH_PAUSED` is read at boot only; the sweep still
+  advances while paused, so unpausing releases no backlog. Losing or
+  rotating the VAPID key breaks every subscription.
+- **push-kinds** — `packages/shared/src/push.ts`: a Push switch per
+  `DIGEST_KINDS` row, stored per forum in `digestSettings.push`, read
+  through `isPushKindEnabled` → `PUSH_KIND_DEFAULTS` (aimed-at-you on,
+  broadcast off; no forum-defaults layer — a forum can't switch a phone
+  on). Audiences are the digest's (`digestKindApplies`). `drafts` is
+  `PUSH_EVENTLESS_KINDS` (a dash, never alerts); the sent-back-notice
+  alerts with no switch. The **push-column** (`DigestSettingsForm`'s
+  `pushKinds`, Ed 2026-10-03) shows them as Email | Push, even at email
+  cadence Never, under the title "Notification settings"; saved through
+  `pushKindsJson`, which REPLACES the set and is strict.
+- **alerts-line** — `components/AlertsLine.tsx` (#381): the one line
+  above "What to include" on a forum's Notifications page (`#alerts`)
+  that turns alerts on/off for THIS device. Same gate as the push-column
+  (`pushPublicKey` non-null and no view-as cookie). Permission is asked
+  only inside the Turn on click (`turnOnPush` in `lib/push.ts`, its first
+  await); Turn off deletes the row AND unsubscribes the browser. States
+  come from the shared **push-device** store (`usePushDevice`, server
+  snapshot "unknown", detection after hydration): off / on / denied /
+  unsupported / ios-tab, the last showing **install-steps**
+  (`components/InstallSteps.tsx`, one text shared with the sidebar).
+  Carries the lock-screen sentence: alerts show who, where and the first
+  line, and some lock screens show them too.
+- **get-notifications-link** — `components/GetNotificationsLink.tsx`
+  (#383): "Get Notifications" in the forum sidebar foot, shown ONLY where
+  alerts are possible and not on for this device — a `next/link` to
+  `/f/<slug>/notifications#alerts` when push works here (installed iPhone
+  app included), a popover with install-steps in an iPhone/iPad browser
+  tab, nothing when on/denied/unsupported/no key/view-as. Reads the
+  push-device store, so it vanishes the moment alerts come on.
+
+- **discord-account** — `discord_account` table (migration 0046) +
   `packages/core/src/discordAccounts.ts` + `syncDiscordFromClerk` /
   `discordIdentityFromClerkUser` (api `auth/`) + `DiscordAccountPanel` on
   both profile pages (2026-10-12): log in with Discord is a Clerk social
@@ -503,6 +684,10 @@ Stable names for feature pieces, so instructions can reference them precisely.
   old one; `refresh` accepts a function of the result for exactly this.
   Any future mutation that can change the current page's address needs
   the same treatment.
+- **Editable fields must be ≥16px on touch devices or iOS Safari zooms on
+  focus** (2026-10-03). The "Touch: no zoom on focus" block at the foot of
+  `globals.css` enforces it with `--text-field-touch`; never "fix" it with
+  `maximum-scale`/`user-scalable=no` (kills pinch-zoom).
 - Postgres `ALTER TYPE … ADD VALUE` can't run inside a transaction — Drizzle
   migrations must **recreate the enum** instead (see migrations 0013/0014).
 - "Draft" means THREE things — never blanket-delete or rename "draft"
@@ -552,3 +737,10 @@ Stable names for feature pieces, so instructions can reference them precisely.
   bypass the column's Date mapping and THROW at runtime on hosted Postgres
   while passing every local check — always use `gte`/`lte`/`eq` operators
   for date comparisons (calendar-v2 dev outage, 2026-07-31).
+
+## How this project is run (Ed's dev-ops conventions)
+
+- Agents also follow Ed's shared instructions in edsaperia/dev-ops: `AGENTS.md`, `CONVENTIONS.md` (builders, coordinators, pull requests) and `claude/QUESTIONS-PAGE.md` (Ed's questions page, where every ask of Ed goes). Read them from dev-ops `main`; a session whose GitHub tool cannot reach edsaperia clones dev-ops (public) instead. This file wins where the two disagree.
+- **Merging is Ed's decision, on his page**, and the coordinator does the merge. Merging to `main` deploys **dev** only. **Production is never deployed by an agent**: when a release is ready, the coordinator asks Ed, and Ed runs `deploy-production.yml` himself (see Git & deploy workflow above).
+- **Other people's PRs** (contributors other than Ed's builders) are theirs: the coordinator reviews and asks Ed, and never pushes to or merges them unasked.
+- `.claude/skills/page-contract/` (checks writes to Ed's page) is copied from dev-ops; refresh it from there. `.claude/settings.json` carries the shared standing permissions on top of this project's own, and `defaultMode: "auto"`.

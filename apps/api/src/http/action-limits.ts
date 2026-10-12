@@ -23,6 +23,9 @@ export const ACTION_LIMITS = {
    * through a review queue reaches; binding on a script that would otherwise
    * churn hearts (and their weighted-score recomputation) in a loop. */
   heart: { windowMs: 60_000, max: 60 },
+  /** {host} Lounge emoji reacts — the ❤️ bucket's shape: generous for
+   * people, binding on a toggle loop. */
+  reaction: { windowMs: 60_000, max: 60 },
   /** Topic creation. */
   topic: { windowMs: 60 * 60_000, max: 30 },
   /** Personal API token creation. Ten fresh credentials an hour is plenty
@@ -39,6 +42,11 @@ export const ACTION_LIMITS = {
   /** Discord link refreshes — each one is a Clerk API call. The profile
    * page syncs on visit and after a link change; a loop is what this stops. */
   discordSync: { windowMs: 60_000, max: 10 },
+  /** Web Push device subscribes (docs/web-push-plan.md §2 finding 5). The
+   * per-user device cap (PUSH_DEVICE_CAP) bounds how many rows one account
+   * holds; this bounds how fast it churns them. The client re-sends its
+   * subscription when the browser rotates keys, never on every page view. */
+  pushSubscribe: { windowMs: 60 * 60_000, max: 30 },
 } as const;
 
 export type LimitedAction = keyof typeof ACTION_LIMITS;
@@ -46,12 +54,14 @@ export type LimitedAction = keyof typeof ACTION_LIMITS;
 const BLOCKED_MESSAGES: Record<LimitedAction, string> = {
   comment: "You're commenting too quickly",
   heart: "You're ❤️-ing too quickly",
+  reaction: "You're reacting too quickly",
   topic: "You're creating topics too quickly",
   tokenMint: "You're creating API tokens too quickly",
   invite: "Too many invites sent recently",
   forum: "You're creating forums too quickly",
   upload: "You're uploading too quickly",
   discordSync: "You're refreshing your Discord link too quickly",
+  pushSubscribe: "You're turning alerts on too often",
 };
 
 export type ActionDecision = { allowed: boolean; retryAfterSeconds: number };

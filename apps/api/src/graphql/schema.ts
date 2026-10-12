@@ -18,11 +18,13 @@ import "./api-tokens";
 import "./discord";
 import "./topics";
 import "./comments";
+import "./lounge";
 import "./members";
 import "./timetables";
 import "./activity";
 import "./slots";
 import "./dashboard";
 import "./sysadmin";
+import "./push";
 
 export const schema = builder.toSchema();

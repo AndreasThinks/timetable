@@ -5,7 +5,12 @@ import {
   markNotificationsSeen,
   type ActivityEntry,
 } from "@timetable/core";
-import { canModerate } from "@timetable/shared";
+import {
+  canModerate,
+  canReadLounge,
+  type TimetableSettings,
+  type Viewer,
+} from "@timetable/shared";
 
 import { builder } from "./builder";
 import { loadTimetableAndViewer, readTimetable } from "./guards";
@@ -139,8 +144,29 @@ const NotificationType = builder
       topicTitle: t.exposeString("topicTitle"),
       topicSlug: t.exposeString("topicSlug", { nullable: true }),
       topicHostSlug: t.exposeString("topicHostSlug", { nullable: true }),
+      /** {host} Lounge kinds only: the conversation to open. Their topic
+       * fields are empty strings. */
+      loungeRootId: t.string({
+        nullable: true,
+        resolve: (n) => n.loungeRootId ?? null,
+      }),
     }),
   });
+
+/** Lounge replies and mentions notify only while the viewer can still
+ * enter the Lounge (it's on, and they're a host or admin there). */
+function seesLounge(
+  readable: {
+    timetable: { settings: TimetableSettings | null };
+    roles: Viewer["roles"];
+  },
+  userId: string,
+): boolean {
+  return canReadLounge(readable.timetable.settings ?? {}, {
+    userId,
+    roles: readable.roles,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Queries
@@ -156,7 +182,9 @@ builder.queryFields((t) => ({
       if (!ctx.user) return [];
       const readable = await readTimetable(ctx, args.idOrSlug);
       if (!readable || readable.roles.length === 0) return [];
-      return listNotifications(readable.timetable.id, ctx.user.id);
+      return listNotifications(readable.timetable.id, ctx.user.id, 50, {
+        lounge: seesLounge(readable, ctx.user.id),
+      });
     },
   }),
 
@@ -167,7 +195,9 @@ builder.queryFields((t) => ({
       if (!ctx.user) return 0;
       const readable = await readTimetable(ctx, args.idOrSlug);
       if (!readable || readable.roles.length === 0) return 0;
-      return countUnreadNotifications(readable.timetable.id, ctx.user.id);
+      return countUnreadNotifications(readable.timetable.id, ctx.user.id, {
+        lounge: seesLounge(readable, ctx.user.id),
+      });
     },
   }),
 

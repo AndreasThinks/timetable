@@ -18,7 +18,7 @@ that helps you ❤️ topics).
 2. **Mirror only the identity.** `discord_account` holds the Discord user
    id (unique — what a bot looks people up by), username, display name and
    avatar. One row per user, cascade-deleted with the user. Additive
-   migration (0043), per the term-time policy.
+   migration (0046), per the term-time policy.
 3. **Sync without a webhook.** Profile fields were only ever copied on
    first sign-in, which would miss anyone linking Discord later. Rather
    than introduce the app's first Clerk webhook (new endpoint, signing
@@ -35,7 +35,7 @@ that helps you ❤️ topics).
 
 ## What was built
 
-- `packages/db`: `discordAccounts` schema + migration 0043.
+- `packages/db`: `discordAccounts` schema + migration 0046.
 - `packages/core/src/discordAccounts.ts`: `getDiscordAccount`,
   `getUserIdByDiscordUserId`, `syncDiscordAccount`.
 - `apps/api`: `auth/discord.ts` (`discordIdentityFromClerkUser`, unit

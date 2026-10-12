@@ -43,6 +43,7 @@ export const DIGEST_KINDS = [
   "slotReleases",
   "drafts",
   "newMembers",
+  "lounge",
 ] as const;
 export type DigestKind = (typeof DIGEST_KINDS)[number];
 
@@ -65,6 +66,7 @@ export const DIGEST_KIND_DEFAULTS: Record<DigestKind, boolean> = {
   slotReleases: true,
   drafts: true,
   newMembers: true,
+  lounge: true,
 };
 
 /** Which members a kind can ever fire for (2026-08-11): topic-owner and
@@ -99,6 +101,7 @@ export const DIGEST_KIND_AUDIENCE: Record<DigestKind, DigestKindAudience> = {
   slotReleases: "host",
   drafts: "host",
   newMembers: "admin",
+  lounge: "host",
 };
 
 export function digestKindApplies(kind: DigestKind, roles: string[]): boolean {
@@ -159,6 +162,12 @@ export type MembershipDigestSettings = {
   /** Weekly only: day to send on, 0 = Sunday … 6 = Saturday (UTC). */
   weekday?: number;
   kinds?: DigestKinds;
+  /** Web Push switches for this forum (#368, 2026-10-03): one per digest
+   * kind, independent of the email ones above. Absent kinds read through
+   * `PUSH_KIND_DEFAULTS` via `isPushKindEnabled` (push.ts) — never read
+   * this map directly. Whether a DEVICE receives anything is its own
+   * subscription; these only choose what alerts in this forum. */
+  push?: DigestKinds;
 };
 
 export type EffectiveDigestSettings = {
@@ -343,6 +352,17 @@ export function isHostCommentsEnabled(settings: TimetableSettings): boolean {
   return settings.hostComments?.enabled ?? true;
 }
 
+/** The {host} Lounge (docs/host-lounge-plan.md, 2026-09-30): one
+ * hosts-and-admins-only threaded room per forum. OFF unless an admin
+ * switches it on, so no forum sprouts a Lounge unannounced. */
+export type LoungeSettings = {
+  enabled?: boolean;
+};
+
+export function isLoungeEnabled(settings: TimetableSettings): boolean {
+  return settings.lounge?.enabled ?? false;
+}
+
 /** Per-timetable settings persisted as JSON: custom role labels, theme
  * colors, default digest options, etc. */
 export type TimetableSettings = {
@@ -368,4 +388,6 @@ export type TimetableSettings = {
   topics?: TopicSettings;
   /** Host-only comment thread option (on unless disabled). */
   hostComments?: HostCommentsSettings;
+  /** {host} Lounge (off unless enabled). */
+  lounge?: LoungeSettings;
 };

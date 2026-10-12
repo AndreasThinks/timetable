@@ -1,12 +1,19 @@
 import { auth } from "@clerk/nextjs/server";
-import { Flag, Heart } from "lucide-react";
+import { CodeXml, Flag, Heart } from "lucide-react";
 import type { Metadata } from "next";
 import { cookies } from "next/headers";
 import { notFound, redirect } from "next/navigation";
 import { cache } from "react";
 
-import { isAdmin, isElector, isHost, type Role } from "@timetable/shared";
+import {
+  isAdmin,
+  isElector,
+  isHost,
+  isLoungeEnabled,
+  type Role,
+} from "@timetable/shared";
 
+import { GetNotificationsLink } from "@/components/GetNotificationsLink";
 import { NavLink } from "@/components/NavLink";
 import { Sidebar } from "@/components/Sidebar";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -16,6 +23,7 @@ import {
 } from "@/components/TimetableSwitcher";
 import { UserPreviewExit } from "@/components/UserPreview";
 import { env } from "@/env";
+import { APPLE_TOUCH_ICON } from "@/lib/appManifest";
 import { emojiFavicon } from "@/lib/favicon";
 import { gqlFetch } from "@/lib/graphql";
 import { getMyTimetables } from "@/lib/myTimetables";
@@ -23,6 +31,7 @@ import {
   buildThemeCss,
   parseTimetableSettings,
   privacyDescription,
+  roleLabel,
 } from "@/lib/timetableSettings";
 import { parseViewAs, VIEW_AS_COOKIE } from "@/lib/userPreview";
 
@@ -83,7 +92,9 @@ export async function generateMetadata({
   const hasFeed = !["private", "deactivated"].includes(timetable.privacy);
   return {
     title: `${timetable.name} Topics`,
-    ...(icon ? { icons: { icon } } : {}),
+    // Metadata merges shallowly: overriding `icons` drops the root's
+    // `apple`, so carry the one-app Home Screen icon along (#367).
+    ...(icon ? { icons: { icon, apple: APPLE_TOUCH_ICON } } : {}),
     ...(hasFeed
       ? {
           alternates: {
@@ -101,6 +112,9 @@ const UNREAD_QUERY = `
     notificationsUnread(idOrSlug: $s)
     topicQueue(idOrSlug: $s) { neverSeenCount }
     moderationQueue(idOrSlug: $s) { id readyAt }
+    loungeUnread(idOrSlug: $s)
+    me { id }
+    pushPublicKey
   }
 `;
 
@@ -131,9 +145,22 @@ async function loadSwitcherAndUnread(
   unread: number;
   queueNeverSeen: number;
   pendingCount: number;
+  loungeUnread: boolean;
+  /** Web Push (#368): null without keys or under view-as — then the "Get
+   * Notifications" link never renders. Members only, like the badges. */
+  pushPublicKey: string | null;
+  viewerId: string | null;
 }> {
   if (!isAuthed)
-    return { switcherItems: [], unread: 0, queueNeverSeen: 0, pendingCount: 0 };
+    return {
+      switcherItems: [],
+      unread: 0,
+      queueNeverSeen: 0,
+      pendingCount: 0,
+      loungeUnread: false,
+      pushPublicKey: null,
+      viewerId: null,
+    };
   const [mine, unreadData] = await Promise.all([
     getMyTimetables(),
     isMember
@@ -141,11 +168,17 @@ async function loadSwitcherAndUnread(
           notificationsUnread: number;
           topicQueue: { neverSeenCount: number } | null;
           moderationQueue: { id: string; readyAt: string | null }[];
+          loungeUnread: boolean;
+          me: { id: string } | null;
+          pushPublicKey: string | null;
         }>(UNREAD_QUERY, { s: slug })
       : Promise.resolve({
           notificationsUnread: 0,
           topicQueue: null,
           moderationQueue: [],
+          loungeUnread: false,
+          me: null,
+          pushPublicKey: null,
         }),
   ]);
   const switcherItems = mine.map((t) => {
@@ -167,6 +200,9 @@ async function loadSwitcherAndUnread(
     // the Pending page's default view shows (2026-08-06).
     pendingCount:
       unreadData.moderationQueue?.filter((t) => t.readyAt).length ?? 0,
+    loungeUnread: unreadData.loungeUnread ?? false,
+    pushPublicKey: unreadData.pushPublicKey ?? null,
+    viewerId: unreadData.me?.id ?? null,
   };
 }
 
@@ -203,6 +239,39 @@ function BadgeNavLink({
         <span className={`nav-badge${quiet ? " nav-badge-quiet" : ""}`}>
           {count > 999 ? "999+" : count}
         </span>
+      ) : null}
+    </NavLink>
+  );
+}
+
+/** "{host} Lounge" when the viewer can enter it (the forum has it on and
+ * they're a host or admin), else null — no link. */
+function loungeNavLabel(
+  settings: ReturnType<typeof parseTimetableSettings>,
+  roles: Role[],
+): string | null {
+  if (!isLoungeEnabled(settings)) return null;
+  if (!isHost(roles) && !isAdmin(roles)) return null;
+  return `${roleLabel(settings.roleLabels, "host")} Lounge`;
+}
+
+/** The {host} Lounge link, with a dot while there are posts the viewer
+ * hasn't seen. */
+function LoungeNavLink({
+  base,
+  label,
+  unread,
+}: {
+  base: string;
+  label: string | null;
+  unread: boolean;
+}) {
+  if (!label) return null;
+  return (
+    <NavLink href={`${base}/lounge`}>
+      {label}
+      {unread ? (
+        <span className="nav-dot" role="img" aria-label="new posts" />
       ) : null}
     </NavLink>
   );
@@ -246,6 +315,8 @@ function SideNav({
   hostOrAdmin,
   admin,
   calendarOn,
+  loungeLabel,
+  loungeUnread,
   unread,
   queueNeverSeen,
   pendingCount,
@@ -259,6 +330,10 @@ function SideNav({
   hostOrAdmin: boolean;
   admin: boolean;
   calendarOn: boolean;
+  /** "{host} Lounge" when the viewer can enter it; null hides the link. */
+  loungeLabel: string | null;
+  /** A Lounge post by someone else since the viewer's last visit. */
+  loungeUnread: boolean;
   unread: number;
   queueNeverSeen: number;
   pendingCount: number;
@@ -288,6 +363,10 @@ function SideNav({
       {/* Calendar v2 (closes #55): the link exists only when the forum has
           switched the feature on. */}
       {calendarOn && <NavLink href={`${base}/calendar`}>Calendar</NavLink>}
+      {/* The {host} Lounge (2026-09-30): hosts and admins, once an admin
+          has switched it on. A dot, not a count — new posts are an
+          invitation to look, not a backlog to clear. */}
+      <LoungeNavLink base={base} label={loungeLabel} unread={loungeUnread} />
       {isMember && (
         <BadgeNavLink
           href={`${base}/notifications`}
@@ -342,8 +421,15 @@ export default async function TimetableLayout({
   const { previewUserId, previewName } = await loadPreview(slug);
   const settings = parseTimetableSettings(timetable.settings);
   const base = `/f/${slug}`;
-  const { switcherItems, unread, queueNeverSeen, pendingCount } =
-    await loadSwitcherAndUnread(isAuthed, isMember, slug);
+  const {
+    switcherItems,
+    unread,
+    queueNeverSeen,
+    pendingCount,
+    loungeUnread,
+    pushPublicKey,
+    viewerId,
+  } = await loadSwitcherAndUnread(isAuthed, isMember, slug);
 
   const themeCss = buildThemeCss(settings);
 
@@ -381,6 +467,8 @@ export default async function TimetableLayout({
               roles,
               timetable.calendarHasSlots,
             )}
+            loungeLabel={loungeNavLabel(settings, roles)}
+            loungeUnread={loungeUnread}
             unread={unread}
             queueNeverSeen={queueNeverSeen}
             pendingCount={pendingCount}
@@ -397,7 +485,11 @@ export default async function TimetableLayout({
           ) : null}
 
           {/* Sidebar foot, one item per line (QA 2026-07-28): visibility,
-              switcher, appearance, report a bug. The plain-English
+              switcher, appearance, Get Notifications (#368 step 6 — only
+              where alerts are possible and not yet on for this device;
+              nothing at all without push keys or under view-as), report a
+              bug, source code (#366, from
+              #360 — always this repository, never a fork). The plain-English
               visibility line replaced the too-terse pill (QA 2026-07-27);
               the forum name lives in the topbar. */}
           <div className="sidebar-foot">
@@ -408,13 +500,27 @@ export default async function TimetableLayout({
               <TimetableSwitcher items={switcherItems} currentSlug={slug} />
             ) : null}
             <ThemeToggle />
+            <GetNotificationsLink
+              slug={slug}
+              pushPublicKey={pushPublicKey}
+              viewerId={viewerId}
+              preview={previewUserId !== null}
+            />
             <a
-              className="sidebar-bug-link faint"
+              className="sidebar-foot-link faint"
               href="https://github.com/sugaroverflow/timetable/issues/new"
               target="_blank"
               rel="noopener noreferrer"
             >
               <Flag size={14} aria-hidden /> Report a bug
+            </a>
+            <a
+              className="sidebar-foot-link faint"
+              href="https://github.com/sugaroverflow/timetable"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <CodeXml size={14} aria-hidden /> Source code
             </a>
           </div>
         </Sidebar>

@@ -3,8 +3,37 @@
 import { useRef, useState } from "react";
 
 import { GrowingTextarea } from "@/components/GrowingTextarea";
+import { clientGql } from "@/lib/clientGraphql";
+import { useCommentThread } from "@/lib/commentThreadAdapter";
+import { isSubmitShortcut } from "@/lib/submitShortcut";
 
 export type MentionCandidate = { name: string | null; slug: string | null };
+
+/** A forum member as the picker loads them: enough to decide whether
+ * they belong in the list at all. */
+export type MentionPerson = MentionCandidate & {
+  roles: readonly string[];
+  deactivatedAt: string | null;
+};
+
+const PEOPLE_QUERY = `query MentionPeople($s: String!) {
+  timetablePeople: forumPeople(idOrSlug: $s) { name slug roles deactivatedAt }
+}`;
+
+/** Who the picker offers. Never a deactivated member (member-deactivation:
+ * only admins are even sent them, and a mention of one notifies nobody);
+ * and, where the thread names roles (the {host} Lounge), only people
+ * holding one of them — so a reply in a hosts-only room never suggests an
+ * elector the room is closed to. */
+export function mentionCandidates(
+  people: readonly MentionPerson[],
+  roles?: readonly string[],
+): MentionCandidate[] {
+  return people
+    .filter((p) => !p.deactivatedAt)
+    .filter((p) => !roles || p.roles.some((r) => roles.includes(r)))
+    .map(({ name, slug }) => ({ name, slug }));
+}
 
 // The in-progress "@handle" immediately before the caret, if any.
 const ACTIVE_MENTION_RE = /(?:^|[^A-Za-z0-9_@])@([a-z0-9-]*)$/i;
@@ -23,6 +52,7 @@ export function MentionTextarea({
   ariaLabel,
   dataTopicComposer,
   onUnhandledKeyDown,
+  textareaRef,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -34,8 +64,10 @@ export function MentionTextarea({
    * box (queue-keys: Enter posts, Escape leaves). While the picker is
    * open it keeps Enter/Tab/Escape and the ↑/↓ that walk it. */
   onUnhandledKeyDown?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
+  textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
 }) {
-  const ref = useRef<HTMLTextAreaElement>(null);
+  const ownRef = useRef<HTMLTextAreaElement>(null);
+  const ref = textareaRef ?? ownRef;
   const [query, setQuery] = useState<string | null>(null);
   const [active, setActive] = useState(0);
 
@@ -85,6 +117,14 @@ export function MentionTextarea({
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    // submit-shortcut (#361): Ctrl/⌘+Enter posts even with the picker
+    // open — it closes the list and the text goes as typed, a half-typed
+    // @handle included (never auto-completed). GrowingTextarea posts.
+    if (isSubmitShortcut(e)) {
+      setQuery(null);
+      onUnhandledKeyDown?.(e);
+      return;
+    }
     if (query === null || matches.length === 0) {
       onUnhandledKeyDown?.(e);
       return;
@@ -141,6 +181,44 @@ export function MentionTextarea({
           ))}
         </ul>
       ) : null}
+    </div>
+  );
+}
+
+/** Mention textarea backed by the forum's visible member list. Candidates
+ * load on first focus so closed reply composers do not add feed-page queries.
+ * The surrounding comment thread (comment-thread-adapter) may narrow the
+ * list to `mentionRoles`. */
+export function ForumMentionTextarea({
+  mentionSlug,
+  ...props
+}: Omit<React.ComponentProps<typeof MentionTextarea>, "candidates"> & {
+  mentionSlug: string;
+}) {
+  const { mentionRoles } = useCommentThread();
+  const [people, setPeople] = useState<MentionPerson[]>([]);
+  const [loadedCandidates, setLoadedCandidates] = useState(false);
+
+  async function loadCandidates() {
+    if (loadedCandidates) return;
+    setLoadedCandidates(true);
+    try {
+      const data = await clientGql<{ timetablePeople: MentionPerson[] }>(
+        PEOPLE_QUERY,
+        { s: mentionSlug },
+      );
+      setPeople(data.timetablePeople ?? []);
+    } catch {
+      // Autocomplete is a convenience; a hand-typed @slug still resolves.
+    }
+  }
+
+  return (
+    <div style={{ flex: 1 }} onFocus={loadCandidates}>
+      <MentionTextarea
+        {...props}
+        candidates={mentionCandidates(people, mentionRoles)}
+      />
     </div>
   );
 }

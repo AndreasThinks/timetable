@@ -13,9 +13,14 @@ import {
 import {
   canManageMembers,
   canModerate,
+  canSeeContactDetails,
   canSeePersonProfile,
   DIGEST_KINDS,
+  isPushEventlessKind,
+  PUSH_KIND_DEFAULTS,
+  type DigestKind,
   type DigestKinds,
+  type PushKinds,
   type Privacy,
   type Role as SharedRole,
   type Viewer,
@@ -27,6 +32,7 @@ import { isSysadmin } from "../auth/sysadmin";
 import { builder } from "./builder";
 import {
   assertOptionalHttpUrl,
+  badRequest,
   capLength,
   forbidden,
   loadTimetableAndViewer,
@@ -39,6 +45,8 @@ import {
 /** Max bio length, shared by the self-edit and admin-edit mutations so the two
  * can't drift apart. Storage hygiene only — the column is unbounded `text`. */
 const BIO_MAX_LENGTH = 8000;
+/** Contact Details are a few lines of addresses and handles, not an essay. */
+const CONTACT_DETAILS_MAX_LENGTH = 1000;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -115,6 +123,14 @@ const PersonType = builder.objectRef<Person>("Person").implement({
       resolve: (p) => (p.bio ? renderMarkdown(p.bio) : null),
     }),
     bio: t.exposeString("bio", { nullable: true }),
+    /** Members-only Markdown (2026-09-30). Already null for anyone who
+     * fails canSeeContactDetails — stripped in personForViewer. */
+    contactDetailsHtml: t.string({
+      nullable: true,
+      resolve: (p) =>
+        p.contactDetails ? renderMarkdown(p.contactDetails) : null,
+    }),
+    contactDetails: t.exposeString("contactDetails", { nullable: true }),
     /** Set while deactivated (member-deactivation, 2026-09-10). Only
      * admin viewers ever receive a deactivated person, so exposing the
      * stamp adds nothing for the public. */
@@ -145,8 +161,8 @@ function withPublicRoles(person: Person, viewer: Viewer): Person {
 /** A person as this viewer may see them, or null if not at all: the
  * privacy-level profile rule, then member-deactivation (2026-09-10) —
  * deactivated members are admin-eyes-only, listed apart on the People
- * page for admins and simply gone for everyone else — then the owner
- * strip. The one gate for both `forumPeople` and `person`. */
+ * page for admins and simply gone for everyone else — then the
+ * members-only Contact Details strip (2026-09-30), then the owner strip. The one gate for both `forumPeople` and `person`. */
 function personForViewer(
   person: Person,
   privacy: Privacy,
@@ -156,7 +172,10 @@ function personForViewer(
     return null;
   }
   if (person.deactivatedAt && !canModerate(viewer)) return null;
-  return withPublicRoles(person, viewer);
+  const visible = canSeeContactDetails(viewer)
+    ? person
+    : { ...person, contactDetails: null };
+  return withPublicRoles(visible, viewer);
 }
 
 // ---------------------------------------------------------------------------
@@ -275,6 +294,44 @@ export function parseDigestKinds(
   return kinds;
 }
 
+/** Per-forum Push switches (#368, step 2b): a JSON {kind: boolean} object,
+ * stored as `digestSettings.push`. Like `kindsJson` the parsed object
+ * REPLACES the stored push set (the Push column always sends every switch)
+ * and never touches the email `kinds`. Unlike `kindsJson` it is strict —
+ * the column is new, so there is no old client to tolerate: malformed
+ * JSON, a non-boolean, an unknown kind, or an eventless kind (`drafts`,
+ * which has no moment to alert on, plan §1) is a BAD_REQUEST rather than
+ * a silent drop. Absent or empty argument: undefined (leave stored). */
+export function parsePushKinds(
+  raw: string | null | undefined,
+): PushKinds | undefined {
+  if (!raw) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    badRequest("pushKindsJson must be a JSON object");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    badRequest("pushKindsJson must be a JSON object");
+  }
+  const kinds: PushKinds = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (!Object.hasOwn(PUSH_KIND_DEFAULTS, key)) {
+      badRequest(`Unknown push kind: ${key.slice(0, 40)}`);
+    }
+    const kind = key as DigestKind;
+    if (isPushEventlessKind(kind)) {
+      badRequest(`${kind} has no push alerts`);
+    }
+    if (typeof value !== "boolean") {
+      badRequest(`Push switch ${kind} must be true or false`);
+    }
+    kinds[kind] = value;
+  }
+  return kinds;
+}
+
 builder.mutationFields((t) => ({
   /** Audit trail for the view-as-user preview (QA #59 round 3): called
    * as the admin enters the preview, before the cookie applies. The
@@ -332,11 +389,18 @@ builder.mutationFields((t) => ({
       idOrSlug: t.arg.string({ required: true }),
       name: t.arg.string({ required: false }),
       bio: t.arg.string({ required: false }),
+      /** Omit to leave unchanged; empty string clears. */
+      contactDetails: t.arg.string({ required: false }),
       image: t.arg.string({ required: false }),
     },
     resolve: async (_p, args, ctx) => {
       capLength(args.name, 120, "Name");
       capLength(args.bio, BIO_MAX_LENGTH, "Bio");
+      capLength(
+        args.contactDetails,
+        CONTACT_DETAILS_MAX_LENGTH,
+        "Contact Details",
+      );
       assertOptionalHttpUrl(args.image, "Image URL");
       const { user, readable } = await loadTimetableAndViewer(
         ctx,
@@ -348,6 +412,10 @@ builder.mutationFields((t) => ({
         {
           name: args.name ?? undefined,
           bio: args.bio ?? undefined,
+          contactDetails:
+            args.contactDetails != null
+              ? args.contactDetails.trim() || null
+              : undefined,
           image: args.image != null ? args.image.trim() || null : undefined,
         },
       );
@@ -404,7 +472,9 @@ builder.mutationFields((t) => ({
   /** Update the viewer's PER-FORUM digest settings (2026-08-11) — the
    * digest is one email per forum, so on/off, cadence, AND the kind
    * switches are all membership settings. Absent args leave their stored
-   * value; kindsJson (a {kind: boolean} object) replaces the stored set. */
+   * value; kindsJson (a {kind: boolean} object) replaces the stored set,
+   * and pushKindsJson (the same shape, #368) replaces the stored Push set
+   * without touching the email switches — see parsePushKinds. */
   updateMyForumDigestSettings: t.field({
     type: "Boolean",
     args: {
@@ -415,6 +485,9 @@ builder.mutationFields((t) => ({
       /** Weekly send day, 0 = Sunday … 6 = Saturday (UTC). */
       weekday: t.arg.int({ required: false }),
       kindsJson: t.arg.string({ required: false }),
+      /** Push switches for this forum, {kind: boolean}; read back
+       * resolved through `Forum.viewerPushKinds`. */
+      pushKindsJson: t.arg.string({ required: false }),
     },
     resolve: async (_p, args, ctx) => {
       const { user, readable } = await loadTimetableAndViewer(
@@ -424,11 +497,13 @@ builder.mutationFields((t) => ({
       const frequency = validDigestFrequency(args.frequency);
       const weekday = validDigestWeekday(args.weekday);
       const kinds = parseDigestKinds(args.kindsJson);
+      const push = parsePushKinds(args.pushKindsJson);
       return updateMembershipDigestSettings(readable.timetable.id, user.id, {
         ...(args.enabled != null ? { enabled: args.enabled } : {}),
         ...(frequency ? { frequency } : {}),
         ...(weekday != null ? { weekday } : {}),
         ...(kinds ? { kinds } : {}),
+        ...(push ? { push } : {}),
       });
     },
   }),
@@ -446,6 +521,8 @@ builder.mutationFields((t) => ({
       userId: t.arg.string({ required: true }),
       bio: t.arg.string({ required: true }),
       /** Omit to leave unchanged; empty string clears. */
+      contactDetails: t.arg.string({ required: false }),
+      /** Omit to leave unchanged; empty string clears. */
       image: t.arg.string({ required: false }),
       /** Omit (or blank) to leave unchanged — a member can be renamed, but
        * not renamed to nothing. Renaming re-derives their member slug. */
@@ -453,6 +530,11 @@ builder.mutationFields((t) => ({
     },
     resolve: async (_p, args, ctx) => {
       capLength(args.bio, BIO_MAX_LENGTH, "Bio");
+      capLength(
+        args.contactDetails,
+        CONTACT_DETAILS_MAX_LENGTH,
+        "Contact Details",
+      );
       capLength(args.name, 120, "Name");
       assertOptionalHttpUrl(args.image, "Image URL");
       const { user, readable } = await requireAdminTimetable(
@@ -464,6 +546,9 @@ builder.mutationFields((t) => ({
       const name = args.name?.trim() || undefined;
       await updateMemberProfile(readable.timetable.id, args.userId, {
         bio: args.bio.trim() || null,
+        ...(args.contactDetails != null
+          ? { contactDetails: args.contactDetails.trim() || null }
+          : {}),
         ...(args.image != null ? { image: args.image.trim() || null } : {}),
         ...(name != null ? { name } : {}),
       });
